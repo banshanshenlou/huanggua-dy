@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.22.6
+// @version      1.23.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.22.5';
+  const VERSION = '1.23.0';
 
   const CONFIG = {
     sel: {
@@ -711,6 +711,8 @@
       this.snapScrollTo = null;
       // 图片缩放状态：仅图片帖有效
       this.zoomState = null;
+      // 横滑回弹定时器：未决时新拖动必须先取消，否则 transition:none 被清
+      this.mediaRestoreTimer = null;
       // 拖动手势进行中标志与基准条目：拖动期间暂停 IO 激活、锁定翻页基准
       this.gestureActive = false;
       this.gestureBase = -1;
@@ -1468,6 +1470,9 @@
       // 放大图平移基准：手势开始时的既有偏移，拖动在其上累加
       let panBaseX = 0;
       let panBaseY = 0;
+      // 多指触摸：只有第一根手指参与手势。第二指落下若也参与，
+      // 会在吸附动画进行中重置手势基准，表现为画面卡在两屏之间
+      let activePointerId = null;
 
       const finishGesture = () => {
         dragging = false;
@@ -1479,10 +1484,12 @@
       slide.addEventListener('dragstart', event => event.preventDefault());
 
       slide.addEventListener('pointerdown', event => {
+        if (activePointerId !== null) return;
         if (isInteractive(event.target) || inTextbox(event.target)) return;
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         // 新手势开始时立即结束未完成的吸附，避免两次动画互相叠加
         this.finishSnap();
+        activePointerId = event.pointerId;
         dragging = true;
         axis = null;
         this.gestureActive = true;
@@ -1502,7 +1509,7 @@
       });
 
       slide.addEventListener('pointermove', event => {
-        if (!dragging) return;
+        if (!dragging || event.pointerId !== activePointerId) return;
         const now = event.timeStamp || Date.now();
         const dt = Math.max(1, now - lastMoveAt);
         vx = (event.clientX - lastX) / dt;
@@ -1515,18 +1522,21 @@
         const dy = event.clientY - startY;
 
         if (!axis) {
-          // 图片放大时优先平移图片，不参与翻页/切图
+          const over = Math.abs(dx) > 12 || Math.abs(dy) > 12;
+          // 图片放大时优先平移图片，不参与翻页/切图；pan 也要越过阈值才启动，
+          // 否则触屏点击的天然抖动会被当成拖动，双击缩回永远无法触发
           if (this.zoomActive(indexOf())) {
+            if (!over) return;
             axis = 'pan';
-          } else if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
+          } else if (over) {
             axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+            if (axis === 'x' && !this.canStepMedia(indexOf())) {
+              // 该条目没有可切换媒体，横向拖动无意义，保持未定向等待纵向
+              if (Math.abs(dy) <= 12) { axis = null; return; }
+              axis = 'y';
+            }
           } else {
             return;
-          }
-          if (axis === 'x' && !this.canStepMedia(indexOf())) {
-            // 该条目没有可切换媒体，横向拖动无意义，保持未定向等待纵向
-            if (Math.abs(dy) <= 12) { axis = null; return; }
-            axis = 'y';
           }
         }
 
@@ -1561,6 +1571,8 @@
       };
 
       slide.addEventListener('pointerup', event => {
+        if (event.pointerId !== activePointerId) return;
+        activePointerId = null;
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         if (endGesture(event)) return;
 
@@ -1591,15 +1603,21 @@
 
       // 浏览器接管手势（如边缘回弹）时不产生 pointerup，必须按回弹处理
       slide.addEventListener('pointercancel', event => {
+        if (event.pointerId !== activePointerId) return;
+        activePointerId = null;
         if (!dragging) return;
         const movedAxis = axis;
         finishGesture();
         if (movedAxis === 'y') this.snapBack();
-        else if (movedAxis === 'x') this.snapBack();
+        else if (movedAxis === 'x') this.cancelDragMedia(indexOf());
         else if (movedAxis === 'pan') this.endPanZoom(indexOf());
       });
       slide.addEventListener('pointerleave', event => {
-        if (event.pointerType === 'mouse') { dragging = false; axis = null; }
+        if (event.pointerType === 'mouse' && event.pointerId === activePointerId) {
+          dragging = false;
+          axis = null;
+          activePointerId = null;
+        }
       });
     }
 
@@ -1708,8 +1726,11 @@
       if (!slide) return;
       const media = slide.querySelector('.dyf-media');
       if (!media) return;
+      // 未决的回弹定时器会清掉手势期间刚设的 transition:none，
+      // 连续快滑时拖动会带上过渡变成滞后跟手，开始新拖动先取消
+      this.clearMediaRestoreTimer();
       media.style.transition = 'none';
-      media.style.transform = 'translateX(' + dx * 0.6 + 'px)';
+      media.style.transform = 'translateX(' + dx + 'px)';
     }
 
     endDragMedia(index, dx, vx) {
@@ -1725,18 +1746,45 @@
         if (!media) return;
         media.style.transition = 'transform .2s ease-out';
         media.style.transform = '';
-        setTimeout(() => { media.style.transition = ''; }, 220);
+        this.armMediaRestoreTimer(media, 220);
       };
 
       if (delta === 0) { restore(); return; }
       const changed = this.stepMedia(delta);
       if (!changed) { restore(); return; }
       // 切换成功也必须清掉拖动位移：applyImage 只换 src 不重建媒体节点，
-      // transform 残留会让画面停在半程偏移（阈值屏宽 1/3 × 0.6 ≈ 屏宽 1/5）。
+      // transform 残留会让画面停在半程偏移（阈值屏宽 1/3）。
       // 内容已换新，无过渡直接归位；未切换成功时走 restore() 保留回弹动画。
+      if (!media) return;
+      this.clearMediaRestoreTimer();
       media.style.transition = 'none';
       media.style.transform = '';
-      setTimeout(() => { media.style.transition = ''; }, 60);
+      this.armMediaRestoreTimer(media, 60);
+    }
+
+    /** 横滑手势被浏览器接管（pointercancel）时清理媒体位移，不留半程偏移 */
+    cancelDragMedia(index) {
+      const slide = this.slides[index];
+      const media = slide && slide.querySelector('.dyf-media');
+      if (!media) return;
+      this.clearMediaRestoreTimer();
+      media.style.transition = 'none';
+      media.style.transform = '';
+      this.armMediaRestoreTimer(media, 60);
+    }
+
+    armMediaRestoreTimer(media, delay) {
+      this.mediaRestoreTimer = setTimeout(() => {
+        this.mediaRestoreTimer = null;
+        media.style.transition = '';
+      }, delay);
+    }
+
+    clearMediaRestoreTimer() {
+      if (this.mediaRestoreTimer) {
+        clearTimeout(this.mediaRestoreTimer);
+        this.mediaRestoreTimer = null;
+      }
     }
 
     // ---- 图片缩放 ----
@@ -1779,7 +1827,12 @@
       const shownW = img.clientWidth || screenW;
       let scale = screenW / shownW;
       if (scale <= 1.05) scale = 2;
-      return Math.min(4, Math.max(2, scale));
+      // 上限由图片原生分辨率决定：高分辨率长图（手机截图拼接、条漫）按比例
+      // 需要 4 倍以上才能撑满屏宽，固定封顶 4 会让极限长图撑不满；
+      // 下限 2 保持既有行为（未满宽的图至少放大到 2 倍），低分辨率小图
+      // 最多放大到原生分辨率，超过只会发糊
+      const natural = img.naturalWidth || shownW;
+      return Math.min(Math.max(scale, 2), Math.max(2, natural / shownW));
     }
 
     /** 放大状态下拖动平移图片，边界内钳制 */
