@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.23.0
+// @version      1.24.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.23.0';
+  const VERSION = '1.24.0';
 
   const CONFIG = {
     sel: {
@@ -460,6 +460,10 @@
 .dyf-media img.dyf-single-image{will-change:transform;touch-action:none;-webkit-user-drag:none;user-select:none;}
 .dyf-media img.dyf-single-image.dyf-anim{transition:transform .22s ease-out;}
 .dyf-media video{background:#000;}
+/* 横滑轮播预览层：挂在 slide 上（在 .dyf-media 之前），object-fit:contain
+   铺满容器与主图 contain 后的视觉一致，平移量独立于媒体容器计算 */
+.dyf-slide-preview{position:absolute;left:0;top:0;width:100%;height:100%;
+  object-fit:contain;max-width:none;max-height:none;pointer-events:none;}
 
 .dyf-loading{position:absolute;left:50%;top:50%;width:38px;height:38px;margin:-19px 0 0 -19px;
   border-radius:50%;border:3px solid rgba(255,255,255,.22);border-top-color:#fff;
@@ -510,6 +514,13 @@
   transition:background .15s,transform .15s;backdrop-filter:blur(4px);}
 .dyf-act:hover{background:rgba(255,255,255,.22)}
 .dyf-act:active{transform:scale(.92)}
+/* 清屏模式：隐藏全部叠加控件只留媒体画面与清屏按钮；隐藏与恢复同速淡入淡出 */
+#dyf-root .dyf-counter,#dyf-root .dyf-hud,#dyf-root .dyf-progress,#dyf-root .dyf-time,
+#dyf-root .dyf-caption,#dyf-root .dyf-actions .dyf-act,#dyf-root .dyf-actions .dyf-speed-group{transition:opacity .2s;}
+#dyf-root.dyf-clean .dyf-counter,#dyf-root.dyf-clean .dyf-hud,#dyf-root.dyf-clean .dyf-progress,
+#dyf-root.dyf-clean .dyf-time,#dyf-root.dyf-clean .dyf-caption,
+#dyf-root.dyf-clean .dyf-actions .dyf-act:not([data-act="clean"]),
+#dyf-root.dyf-clean .dyf-actions .dyf-speed-group{opacity:0;pointer-events:none;}
 .dyf-act.is-on{color:#ffd23f}
 .dyf-act.is-local{border:1px dashed rgba(255,255,255,.38);}
 
@@ -713,6 +724,8 @@
       this.zoomState = null;
       // 横滑回弹定时器：未决时新拖动必须先取消，否则 transition:none 被清
       this.mediaRestoreTimer = null;
+      // 轮播预览层当前方向：0 无，1 下一张在右侧，-1 上一张在左侧
+      this.slidePreviewDir = 0;
       // 拖动手势进行中标志与基准条目：拖动期间暂停 IO 激活、锁定翻页基准
       this.gestureActive = false;
       this.gestureBase = -1;
@@ -837,6 +850,8 @@
       this.commentsTitleEl = null;
       this.commentsSheetEl = null;
       this.helpOpen = false;
+      // 清屏为会话内状态，退出浮层即复位，下次进入从完整控件开始
+      this.cleanScreenOn = false;
       this.helpEl = null;
 
       removeStyle();
@@ -1387,7 +1402,34 @@
 
       actions.appendChild(this.buildSpeedGroup());
 
+      // 清屏：抖音式一键隐藏全部控件，再点还原。翻页重建按钮时按实例状态回显
+      const cleanBtn = el('button', 'dyf-act');
+      cleanBtn.dataset.act = 'clean';
+      cleanBtn.innerHTML = (this.cleanScreenOn ? iconRestore() : iconClean()) +
+        '<span>' + (this.cleanScreenOn ? '还原' : '清屏') + '</span>';
+      cleanBtn.title = '清屏：只看内容，再点还原';
+      if (this.cleanScreenOn) cleanBtn.classList.add('is-on');
+      cleanBtn.addEventListener('click', () => this.toggleCleanScreen(cleanBtn));
+      actions.appendChild(cleanBtn);
+
       return actions;
+    }
+
+    /** 清屏模式：隐藏全部叠加控件只留画面；状态跟实例走，翻页不退出 */
+    toggleCleanScreen(btn) {
+      const on = this.root.classList.toggle('dyf-clean');
+      this.cleanScreenOn = on;
+      // 每条 slide 有自己的操作栏，全部按钮同步切换，避免翻页后状态不一致
+      this.root.querySelectorAll('[data-act="clean"]').forEach(b => {
+        b.innerHTML = (on ? iconRestore() : iconClean()) +
+          '<span>' + (on ? '还原' : '清屏') + '</span>';
+        b.classList.toggle('is-on', on);
+      });
+      if (on) {
+        // 进入清屏先收掉放大与横滑残留，画面回到纯净基准
+        this.resetZoom(this.activeIndex);
+        this.finishSnap();
+      }
     }
 
     /** 倍速：按钮在操作栏内，点击向左展开，悬停不展开 */
@@ -1674,7 +1716,8 @@
       }
 
       this.finishSnap();
-      this.snapScrollTo = { target, to, previous };
+      const session = { target, to, previous };
+      this.snapScrollTo = session;
 
       const from = scroller.scrollTop;
       if (from === to) {
@@ -1687,7 +1730,10 @@
 
       this.snapTimer = null;
       const step = now => {
-        if (this.snapScrollTo === null || this.snapScrollTo.to !== to) return;
+        if (this.snapScrollTo !== session) return;
+        // 目标位置每帧实时取：移动端地址栏伸缩会改变 100dvh 与全部
+        // offsetTop，用开拍时的旧值落位会停在两屏之间（露出上一条半截）
+        const to = dest.offsetTop;
         const p = Math.min(1, (now - t0) / dur);
         scroller.scrollTop = from + (to - from) * ease(p);
         if (p < 1) {
@@ -1705,7 +1751,8 @@
       this.snapTimer = null;
       this.snapScrollTo = null;
       if (!info) return;
-      this.scroller.scrollTop = info.to;
+      const dest = this.slides[info.target];
+      this.scroller.scrollTop = dest ? dest.offsetTop : info.to;
       if (info.target !== info.previous) this.setActive(info.target, false);
     }
 
@@ -1719,18 +1766,61 @@
       }
     }
 
-    // ---- 横向拖动切媒体 ----
+    // ---- 横向拖动切媒体（轮播：当前媒体推走、相邻图跟进） ----
+
+    /**
+     * 拖动时把相邻方向的图片装到屏外同步平移。只在相邻项是图片时插预览：
+     * 视频预览要提前解码代价高，保持旧的回弹行为；到边界无相邻项也不插。
+     */
+    prepareSlidePreview(index, dir) {
+      const slide = this.slides[index];
+      if (!slide) return null;
+      const media = slide.querySelector('.dyf-media');
+      if (!media) return null;
+      const post = this.posts[index];
+      const list = post ? this.mediaList(post) : [];
+      const next = this.currentMediaIndex(slide) + dir;
+      if (list.length < 2 || next < 0 || next >= list.length || list[next].type !== 'image') {
+        this.removeSlidePreview(slide);
+        return null;
+      }
+      let preview = slide.querySelector('.dyf-slide-preview');
+      if (preview && this.slidePreviewDir === dir) return preview;
+      if (preview) preview.remove();
+      preview = document.createElement('img');
+      preview.className = 'dyf-slide-preview';
+      preview.referrerPolicy = 'no-referrer';
+      preview.src = list[next].src;
+      // 插到媒体容器之前：容器拖出时预览层不被压在下面
+      slide.insertBefore(preview, media);
+      this.slidePreviewDir = dir;
+      return preview;
+    }
+
+    removeSlidePreview(slide) {
+      const preview = slide && slide.querySelector('.dyf-slide-preview');
+      if (preview) preview.remove();
+      this.slidePreviewDir = 0;
+    }
 
     dragMedia(index, dx) {
       const slide = this.slides[index];
       if (!slide) return;
       const media = slide.querySelector('.dyf-media');
       if (!media) return;
-      // 未决的回弹定时器会清掉手势期间刚设的 transition:none，
+      // 未决的收尾定时器会清掉手势期间刚设的 transition:none，
       // 连续快滑时拖动会带上过渡变成滞后跟手，开始新拖动先取消
       this.clearMediaRestoreTimer();
+      const dir = dx < 0 ? 1 : -1;
+      const preview = Math.abs(dx) > 2 ? this.prepareSlidePreview(index, dir) : this.removeSlidePreview(slide) || null;
       media.style.transition = 'none';
       media.style.transform = 'translateX(' + dx + 'px)';
+      if (preview) {
+        // 预览跟随：与媒体容器（宽度=屏宽）并排，随 dx 同步进屏
+        const w = slide.clientWidth;
+        preview.style.transition = 'none';
+        preview.style.transform = 'translateX(' + (dir > 0 ? w + dx : dx - w) + 'px)';
+      }
     }
 
     endDragMedia(index, dx, vx) {
@@ -1742,24 +1832,40 @@
       if (dx < -width / 3 || (Math.abs(vx) > 0.55 && dx < -40)) delta = 1;
       else if (dx > width / 3 || (Math.abs(vx) > 0.55 && dx > 40)) delta = -1;
 
+      // 回弹：媒体归位、预览滑回屏外，动画结束统一复位清理
       const restore = () => {
         if (!media) return;
+        const preview = slide.querySelector('.dyf-slide-preview');
+        const w = slide.clientWidth;
         media.style.transition = 'transform .2s ease-out';
         media.style.transform = '';
-        this.armMediaRestoreTimer(media, 220);
+        if (preview) {
+          const dir = this.slidePreviewDir || (dx < 0 ? 1 : -1);
+          preview.style.transition = 'transform .2s ease-out';
+          preview.style.transform = 'translateX(' + (dir > 0 ? w : -w) + 'px)';
+        }
+        this.armMediaRestoreTimer(media, 240);
       };
 
       if (delta === 0) { restore(); return; }
       const changed = this.stepMedia(delta);
       if (!changed) { restore(); return; }
-      // 切换成功也必须清掉拖动位移：applyImage 只换 src 不重建媒体节点，
-      // transform 残留会让画面停在半程偏移（阈值屏宽 1/3）。
-      // 内容已换新，无过渡直接归位；未切换成功时走 restore() 保留回弹动画。
-      if (!media) return;
+      // 切换成功：状态已到新图。带预览时走轮播收尾——当前媒体（旧图）
+      // 滑出屏幕、预览（新图）滑入；applyImage 换 src 发生在屏外，无闪现。
+      // 无预览（相邻是视频或到边界）保持旧行为：无过渡直接归位，避免残留。
+      const preview = slide.querySelector('.dyf-slide-preview');
+      const w = slide.clientWidth;
       this.clearMediaRestoreTimer();
-      media.style.transition = 'none';
-      media.style.transform = '';
-      this.armMediaRestoreTimer(media, 60);
+      if (preview) {
+        media.style.transition = 'transform .22s ease-out';
+        media.style.transform = 'translateX(' + (delta === 1 ? -w : w) + 'px)';
+        preview.style.transition = 'transform .22s ease-out';
+        preview.style.transform = 'translateX(0px)';
+      } else {
+        media.style.transition = 'none';
+        media.style.transform = '';
+      }
+      this.armMediaRestoreTimer(media, 260);
     }
 
     /** 横滑手势被浏览器接管（pointercancel）时清理媒体位移，不留半程偏移 */
@@ -1767,16 +1873,24 @@
       const slide = this.slides[index];
       const media = slide && slide.querySelector('.dyf-media');
       if (!media) return;
+      this.removeSlidePreview(slide);
       this.clearMediaRestoreTimer();
       media.style.transition = 'none';
       media.style.transform = '';
       this.armMediaRestoreTimer(media, 60);
     }
 
+    /**
+     * 横滑收尾定时器：复位媒体容器过渡与位移、移除预览层。
+     * 新拖动开始时会先取消本定时器，避免与手势互相覆盖。
+     */
     armMediaRestoreTimer(media, delay) {
+      const slide = media.closest('.dyf-slide');
       this.mediaRestoreTimer = setTimeout(() => {
         this.mediaRestoreTimer = null;
         media.style.transition = '';
+        media.style.transform = '';
+        this.removeSlidePreview(slide);
       }, delay);
     }
 
@@ -3038,6 +3152,7 @@
         ['评论区翻页', '评论区打开时按空格，向下翻一屏'],
         ['点赞', '双击画面（图片帖双击为放大 / 缩小）'],
         ['打开原帖', '点击左下角标题'],
+        ['清屏', '右下角「清屏」按钮：隐藏全部控件只看内容，再点还原'],
         ['从头看 / 继续看', '左上角计数器右侧的两个小图标（回到顶部 / 跳向底部）：从头看回第 1 页最新，继续看跳到下一个没看过的条目'],
         ['关闭 / 退出', 'Esc']
       ];
@@ -3264,6 +3379,20 @@
   function iconJumpToTop() {
     return '<svg viewBox="0 0 24 24"><line x1="5" y1="4" x2="19" y2="4"/>' +
       '<polyline points="6 14 12 8 18 14"/><line x1="12" y1="8" x2="12" y2="20"/></svg>';
+  }
+
+  /** 清屏：斜杠闭眼（隐藏全部控件） */
+  function iconClean() {
+    return '<svg viewBox="0 0 24 24"><line x1="4" y1="4" x2="20" y2="20"/>' +
+      '<path d="M10.6 5.2A9 9 0 0 1 12 5.1c5 0 8.6 4.3 9.6 6.9-.4.9-1.2 2.2-2.4 3.4"/>' +
+      '<path d="M6.2 6.6C4.1 8 2.7 10 2.1 12c1 2.6 4.6 6.9 9.9 6.9 1.4 0 2.7-.3 3.9-.8"/>' +
+      '<circle cx="12" cy="12" r="2.6"/></svg>';
+  }
+
+  /** 还原：睁眼（恢复控件显示） */
+  function iconRestore() {
+    return '<svg viewBox="0 0 24 24"><path d="M2.1 12c1-2.6 4.6-6.9 9.9-6.9s8.9 4.3 9.9 6.9c-1 2.6-4.6 6.9-9.9 6.9S3.1 14.6 2.1 12z"/>' +
+      '<circle cx="12" cy="12" r="2.6"/></svg>';
   }
 
   /** 继续看：跳向底部语义（底部横杠 + 向下箭头） */
