@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.24.0
+// @version      1.24.1
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.24.0';
+  const VERSION = '1.24.1';
 
   const CONFIG = {
     sel: {
@@ -1402,13 +1402,13 @@
 
       actions.appendChild(this.buildSpeedGroup());
 
-      // 清屏：抖音式一键隐藏全部控件，再点还原。翻页重建按钮时按实例状态回显
+      // 清屏：抖音式一键隐藏全部控件，再点还原。翻页重建按钮时按实例状态回显；
+      // 不用 is-on 高亮，清屏后唯一亮着的按钮会破坏沉浸感
       const cleanBtn = el('button', 'dyf-act');
       cleanBtn.dataset.act = 'clean';
       cleanBtn.innerHTML = (this.cleanScreenOn ? iconRestore() : iconClean()) +
         '<span>' + (this.cleanScreenOn ? '还原' : '清屏') + '</span>';
       cleanBtn.title = '清屏：只看内容，再点还原';
-      if (this.cleanScreenOn) cleanBtn.classList.add('is-on');
       cleanBtn.addEventListener('click', () => this.toggleCleanScreen(cleanBtn));
       actions.appendChild(cleanBtn);
 
@@ -1423,7 +1423,6 @@
       this.root.querySelectorAll('[data-act="clean"]').forEach(b => {
         b.innerHTML = (on ? iconRestore() : iconClean()) +
           '<span>' + (on ? '还原' : '清屏') + '</span>';
-        b.classList.toggle('is-on', on);
       });
       if (on) {
         // 进入清屏先收掉放大与横滑残留，画面回到纯净基准
@@ -3381,18 +3380,16 @@
       '<polyline points="6 14 12 8 18 14"/><line x1="12" y1="8" x2="12" y2="20"/></svg>';
   }
 
-  /** 清屏：斜杠闭眼（隐藏全部控件） */
+  /** 清屏：对角角标向中心收拢（收起全部控件），样式同抖音清屏 */
   function iconClean() {
-    return '<svg viewBox="0 0 24 24"><line x1="4" y1="4" x2="20" y2="20"/>' +
-      '<path d="M10.6 5.2A9 9 0 0 1 12 5.1c5 0 8.6 4.3 9.6 6.9-.4.9-1.2 2.2-2.4 3.4"/>' +
-      '<path d="M6.2 6.6C4.1 8 2.7 10 2.1 12c1 2.6 4.6 6.9 9.9 6.9 1.4 0 2.7-.3 3.9-.8"/>' +
-      '<circle cx="12" cy="12" r="2.6"/></svg>';
+    return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M14 5h5v5"/><path d="M10 19H5v-5"/></svg>';
   }
 
-  /** 还原：睁眼（恢复控件显示） */
+  /** 还原：对角角标从中心展开（恢复控件显示） */
   function iconRestore() {
-    return '<svg viewBox="0 0 24 24"><path d="M2.1 12c1-2.6 4.6-6.9 9.9-6.9s8.9 4.3 9.9 6.9c-1 2.6-4.6 6.9-9.9 6.9S3.1 14.6 2.1 12z"/>' +
-      '<circle cx="12" cy="12" r="2.6"/></svg>';
+    return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M5 10V5h5"/><path d="M19 14v5h-5"/></svg>';
   }
 
   /** 继续看：跳向底部语义（底部横杠 + 向下箭头） */
