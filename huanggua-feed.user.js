@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.24.1
+// @version      1.25.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.24.1';
+  const VERSION = '1.25.0';
 
   const CONFIG = {
     sel: {
@@ -77,6 +77,8 @@
     // 浮层内保留视频元素的上限，超过会导致解码器不足
     videoPoolSize: 3,
     videoLoadTimeoutMs: 15000,
+    // 卡顿自愈：waiting/stalled 持续这么久仍无进展就原地重新拉流一次
+    videoStallRecoverMs: 8000,
     // 距列表末尾多少条开始自动翻页
     loadAhead: 5,
     // 主动切换时的锁定时长，避免一次滚轮手势连跳多条
@@ -139,18 +141,51 @@
   function saveLiked() { store.set('liked', [...likedIds]); }
   function saveFav() { store.set('fav', [...favIds]); }
 
-  // 已看过集合：从头看 / 继续看的跳过依据。FIFO 上限防止无限增长。
-  // v1.21.0 前浏览过的帖子不在集合里，会被当作未看过，属已知冷启动边界。
-  const seenIds = new Set(store.get('seen', []));
-  const SEEN_LIMIT = 1000;
+  // ------------------------------------------------------------ 阅读位置
 
-  function recordSeen(id) {
-    if (!id || seenIds.has(id)) return;
-    seenIds.add(id);
-    if (seenIds.size > SEEN_LIMIT) {
-      for (const old of [...seenIds].slice(0, seenIds.size - SEEN_LIMIT)) seenIds.delete(old);
+  /**
+   * 阅读位置只按帖子 ID 记，不再保存已看过的整批 ID：
+   * 帖子 ID 在站内稳定，列表索引会随新增帖与排序漂移，只作本地定位加速。
+   * - last：最近一次阅读位置，进入浮层按它恢复；
+   * - farthest：最靠后的阅读进度，单调不回退，回翻顶部不覆盖。
+   * 按 (sort, tag) 各存一份，切分类回来位置不丢；最多保留 5 份防止累积。
+   */
+  const MARK_LIMIT = 5;
+
+  const markKey = (sort, tag) => String(sort || '') + '|' + String(tag || '');
+  const markStamp = entry => Math.max(entry?.last?.at || 0, entry?.farthest?.at || 0);
+
+  /** 读取全部阅读位置，顺手迁移旧数据：单槽 progress 转 last，全量 seen 集合删除。 */
+  function readMarks() {
+    let map = store.get('bookmarks', null);
+    if (!map || typeof map !== 'object' || Array.isArray(map)) map = {};
+    const legacy = store.get('progress', null);
+    if (legacy && legacy.postId) {
+      const key = markKey(legacy.sort, legacy.tag);
+      if (!map[key] || !map[key].last) {
+        map[key] = Object.assign({}, map[key], {
+          last: { postId: legacy.postId, at: legacy.at || Date.now() }
+        });
+        store.set('bookmarks', map);
+      }
+      store.remove('progress');
     }
-    store.set('seen', [...seenIds]);
+    if (store.get('seen', null) != null) store.remove('seen');
+    return map;
+  }
+
+  /** 写回某个 (sort, tag) 的位置；entry 为空表示清除该分类的进度 */
+  function writeMarks(sort, tag, entry) {
+    const map = readMarks();
+    if (entry) map[markKey(sort, tag)] = entry;
+    else delete map[markKey(sort, tag)];
+    const keys = Object.keys(map).filter(key => map[key] && typeof map[key] === 'object');
+    if (keys.length > MARK_LIMIT) {
+      keys.sort((a, b) => markStamp(map[b]) - markStamp(map[a]));
+      for (const key of keys.slice(MARK_LIMIT)) delete map[key];
+    }
+    store.set('bookmarks', map);
+    return map;
   }
 
   // ---------------------------------------------------------------- 工具
@@ -736,6 +771,8 @@
       this.openBaselineIndex = 0;
       // 评论区预载计时器：激活条目停留片刻后预取详情缓存
       this.commentPrefetchTimer = null;
+      // 当前 (sort, tag) 的阅读位置条目缓存，避免每次翻页都读存储
+      this.markEntry = null;
       // 已并行预载过的图片地址：窗口回收只清节点，缓存命中靠它去重
       this.warmedImages = new Set();
 
@@ -793,9 +830,10 @@
 
       store.set('lastMode', 'dy');
 
-      // 进度快照必须先取：下面 setActive 会把进度覆写为当前激活条目，
-      // 覆写后再读就只剩第 1 条，跨页恢复永远匹配不到目标
-      const savedProgress = store.get('progress', null);
+      // 待跨页恢复的目标必须先取：下面 setActive 会写入新位置，
+      // 取晚了读到的就是当前条目，永远匹配不到目标
+      this.markEntry = null;
+      const savedPostId = this.pendingRestorePostId();
       // 先让浮层可见再定位：display:none 时 offsetTop 恒为 0，滚动会失效
       this.restoreProgress();
       this.openBaselineIndex = this.activeIndex;
@@ -807,11 +845,7 @@
       this.maybeLoadMore();
       // 进度条目可能属于上次运行期追加的远程分页，本地首屏匹配不到时
       // 逐页拉取直到找到，避免刷新或重开后从头开始
-      if (savedProgress && this.source.hasMore &&
-          savedProgress.sort === this.source.sort && savedProgress.tag === this.source.tag &&
-          !this.posts.some(post => post.id === savedProgress.postId)) {
-        void this.restoreAcrossPages(savedProgress);
-      }
+      if (savedPostId && this.source.hasMore) void this.restoreAcrossPages(savedPostId);
       // 默认静音是自动播放的前提，用户需要知道怎样开启声音
       if (settings.muted) setTimeout(() => this.toast('点击画面开启声音'), 500);
       return true;
@@ -822,6 +856,8 @@
       this.opened = false;
       // 退出前记下当前条目，用于在原页面定位
       const activePost = this.posts[this.activeIndex] || null;
+      // 面板停留、进度条拖动不走 setActive，退出时补记一次位置
+      this.saveProgress();
 
       document.removeEventListener('keydown', this.onKeyDown, true);
       window.removeEventListener('resize', this.onResize);
@@ -890,34 +926,33 @@
     }
 
     /**
-     * 回到最新：清进度后重载列表第 1 页。进度不清的话刷新后会被
-     * 跨页恢复直接拉回旧位置，与「从头看」的意图相反。
+     * 回到最新：清掉当前分类的阅读位置后重载列表第 1 页。位置不清的话
+     * 刷新后会被跨页恢复直接拉回旧位置，与「从头看」的意图相反。
      */
     goToLatest() {
-      store.remove('progress');
+      writeMarks(this.source.sort, this.source.tag, null);
+      this.markEntry = {};
       location.href = location.pathname + '?sort=' + encodeURIComponent(this.source.sort) +
         '&tag=' + encodeURIComponent(this.source.tag);
     }
 
-    /** 当前位置之后第一个未看过的条目；没有返回 -1 */
-    firstUnseenIndex() {
-      for (let i = this.activeIndex + 1; i < this.posts.length; i++) {
-        if (!seenIds.has(this.posts[i].id)) return i;
-      }
-      return -1;
+    /** 最靠后的阅读进度在本地列表中的索引；没有记录或不在本地返回 -1 */
+    farthestIndex() {
+      const far = this.marks().farthest;
+      if (!far || !far.postId) return -1;
+      return this.posts.findIndex(post => post.id === far.postId);
     }
 
     /**
-     * 评估从头看 / 继续看的常驻显示（嵌在左上角计数器右侧，无淡出机制）：
+     * 从头看 / 回到进度的常驻显隐（嵌在左上角计数器右侧，无淡出机制）：
      * - 从头看：不在第 1 条时可用；
-     * - 继续看：当前位置与第一个未看条目之间还有已看内容（间隔超过 1 条）
-     *   才值得显示；紧邻的未看条目直接下滑就能到，按钮只会碍事。
+     * - 回到进度：有记录且与当前条目不同才显示，否则点了也不动。
      */
     updateJumpbar() {
       if (!this.jumpBarEl) return;
-      const first = this.firstUnseenIndex();
+      const far = this.farthestIndex();
       this.jumpBarButtons.restart.style.display = this.activeIndex > 0 ? '' : 'none';
-      this.jumpBarButtons.continue.style.display = first > this.activeIndex + 1 ? '' : 'none';
+      this.jumpBarButtons.progress.style.display = far >= 0 && far !== this.activeIndex ? '' : 'none';
     }
 
     buildShell() {
@@ -995,7 +1030,7 @@
       const toast = el('div', 'dyf-toast');
       root.appendChild(toast);
 
-      // 从头看 / 继续看：常驻嵌在计数器右侧，按浏览状态条件显隐（无淡出机制）。
+      // 从头看 / 回到进度：常驻嵌在计数器右侧，按浏览状态条件显隐（无淡出机制）。
       // 按钮透明融入计数器底色，hover 圆形高亮；图标语义为回到顶部 / 跳向底部
       const jumpbar = el('div', 'dyf-jumpbar');
       const restartBtn = el('button', 'dyf-hud-btn');
@@ -1006,17 +1041,17 @@
         event.stopPropagation();
         this.goToLatest();
       });
-      const continueBtn = el('button', 'dyf-hud-btn');
-      continueBtn.innerHTML = iconJumpToBottom();
-      continueBtn.title = '继续看（跳到下一个没看过的条目）';
-      continueBtn.setAttribute('aria-label', '继续看');
-      continueBtn.addEventListener('click', event => {
+      const progressBtn = el('button', 'dyf-hud-btn');
+      progressBtn.innerHTML = iconJumpToBottom();
+      progressBtn.title = '回到上次看到的进度';
+      progressBtn.setAttribute('aria-label', '回到进度');
+      progressBtn.addEventListener('click', event => {
         event.stopPropagation();
-        const first = this.firstUnseenIndex();
-        if (first >= 0) this.jumpTo(first);
+        const far = this.farthestIndex();
+        if (far >= 0) this.jumpTo(far);
       });
       jumpbar.appendChild(restartBtn);
-      jumpbar.appendChild(continueBtn);
+      jumpbar.appendChild(progressBtn);
       counter.appendChild(jumpbar);
 
       const comments = this.buildCommentPanel();
@@ -1033,7 +1068,7 @@
       this.panelEl = panel;
       this.toastEl = toast;
       this.jumpBarEl = jumpbar;
-      this.jumpBarButtons = { restart: restartBtn, continue: continueBtn };
+      this.jumpBarButtons = { restart: restartBtn, progress: progressBtn };
       this.commentsEl = comments.wrap;
       this.commentsBodyEl = comments.body;
       this.commentsTitleEl = comments.title;
@@ -2224,6 +2259,13 @@
       video.addEventListener('canplay', () => setLoading(false));
       video.addEventListener('playing', () => setLoading(false));
 
+      // 缓冲不足先自愈一次：多数卡顿是这一段连接取不到数据，重新拉流即可续上
+      const onStall = () => this.scheduleStallRecover(video);
+      video.addEventListener('waiting', onStall);
+      video.addEventListener('stalled', onStall);
+      video.addEventListener('playing', () => this.cancelStallRecover(video));
+      video.addEventListener('timeupdate', () => this.cancelStallRecover(video));
+
       // 加载失败时不能只留一张封面图，否则用户会以为这是图片
       video.addEventListener('error', () => {
         void this.recoverVideo(video, '视频加载失败');
@@ -2262,17 +2304,67 @@
       }
     }
 
+    /**
+     * 缓冲策略：当前条目全量缓冲；桌面宽带给下一条预缓冲，切过去首帧不用等；
+     * 其余（包括移动端的下一条）只取元数据，避免多路并发抢带宽。
+     */
+    preloadFor(index) {
+      if (index === this.activeIndex) return 'auto';
+      const narrow = window.matchMedia('(max-width: 640px)').matches;
+      if (!narrow && index === this.activeIndex + 1) return 'auto';
+      return 'metadata';
+    }
+
+    /**
+     * 卡顿自愈：waiting/stalled 持续到期限仍没有 readyState>=3 就原地重新拉流，
+     * 保留播放进度。每个元素只做一次，再卡就走正常失败提示，避免无限请求。
+     */
+    scheduleStallRecover(video) {
+      const state = this.videoStates.get(video);
+      if (!state || state.stalled || state.renewing || state.stallTimer) return;
+      if (document.hidden || state.index !== this.activeIndex || video.paused) return;
+      state.stallTimer = setTimeout(() => {
+        state.stallTimer = null;
+        if (this.videoStates.get(video) !== state) return;
+        if (document.hidden || state.index !== this.activeIndex || video.paused) return;
+        if (video.readyState >= 3) return;
+        state.stalled = true;
+        const at = video.currentTime;
+        video.load();
+        applyRate(video);
+        if (at > 0) {
+          video.addEventListener('loadedmetadata', () => {
+            if (this.videoStates.get(video) !== state) return;
+            const limit = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.5) : at;
+            video.currentTime = Math.min(at, limit);
+          }, { once: true });
+        }
+        this.playCurrent();
+      }, CONFIG.videoStallRecoverMs);
+    }
+
+    cancelStallRecover(video) {
+      const state = this.videoStates.get(video);
+      if (!state) return;
+      clearTimeout(state.stallTimer);
+      state.stallTimer = null;
+    }
+
     /** 播放器复用时为这一次媒体分配独立状态，旧续签请求不得覆盖新媒体。 */
     configureVideo(index, video) {
       const old = this.videoStates.get(video);
       if (old) { clearTimeout(old.timer); old.controller?.abort(); }
       const item = this.currentMediaItem(index);
-      const state = { index, src: item.src, vid: item.vid || '', retried: false, timer: null };
+      const state = {
+        index, src: item.src, vid: item.vid || '', retried: false,
+        timer: null, stallTimer: null, stalled: false
+      };
       this.videoStates.set(video, state);
       video.pause();
       this.clearMediaTip(this.slides[index]);
       video.poster = item.poster || '';
       video.setAttribute('data-src', item.src);
+      video.preload = this.preloadFor(index);
       // 编号由本脚本管理，不挂站点续签监听所用属性，避免两套请求竞争。
       video.src = item.src;
       video.load();
@@ -2397,6 +2489,8 @@
       this.setVideoLoading(video, false);
       const state = this.videoStates.get(video);
       state?.controller?.abort();
+      clearTimeout(state?.timer);
+      clearTimeout(state?.stallTimer);
       this.videoStates.delete(video);
       this.videos.delete(index);
       video.pause();
@@ -2409,11 +2503,15 @@
     }
 
     /**
-     * 只保留当前项前后各一个视频元素。
+     * 只保留邻近的视频元素：桌面前后各一个，移动端只留当前与下一条。
      * 距离更远的立即释放，避免同时占用多个解码器与带宽。
      */
     syncVideos() {
-      const keep = new Set([this.activeIndex - 1, this.activeIndex, this.activeIndex + 1]);
+      // 移动端三路并发在弱网下互相抢带宽，卡顿比预先缓冲更明显
+      const narrow = window.matchMedia('(max-width: 640px)').matches;
+      const keep = new Set(narrow
+        ? [this.activeIndex, this.activeIndex + 1]
+        : [this.activeIndex - 1, this.activeIndex, this.activeIndex + 1]);
       for (const [index] of this.videos) {
         if (!keep.has(index) || this.currentMediaItem(index)?.type !== 'video') this.releaseVideo(index);
       }
@@ -2421,6 +2519,8 @@
         if (index < 0 || index >= this.posts.length) continue;
         if (this.currentMediaItem(index)?.type === 'video') this.ensureVideo(index);
       }
+      // 邻条升为当前后立即改为全量缓冲，降级时收回为只取元数据
+      for (const [index, video] of this.videos) video.preload = this.preloadFor(index);
     }
 
     // ------------------------------------------------------------ 切换
@@ -2455,7 +2555,6 @@
       this.updateCounter();
       this.updateActiveClass();
       this.saveProgress();
-      recordSeen(this.posts[index].id);
       this.updateJumpbar();
       this.maybeLoadMore();
       void this.ensureDetailMedia(index);
@@ -2593,37 +2692,64 @@
 
     // ------------------------------------------------------------ 进度
 
-    saveProgress() {
-      const post = this.posts[this.activeIndex];
-      if (!post) return;
-      store.set('progress', {
-        sort: this.source.sort,
-        tag: this.source.tag,
-        postId: post.id,
-        index: this.activeIndex,
-        at: Date.now()
-      });
-    }
-
-    restoreProgress() {
-      const progress = store.get('progress', null);
-      let index = 0;
-      if (progress && progress.sort === this.source.sort && progress.tag === this.source.tag) {
-        const found = this.posts.findIndex(post => post.id === progress.postId);
-        if (found >= 0) index = found;
+    /** 当前 (sort, tag) 的阅读位置条目；首次访问时从存储读取并缓存 */
+    marks() {
+      if (!this.markEntry) {
+        const map = readMarks();
+        this.markEntry = map[markKey(this.source.sort, this.source.tag)] || {};
       }
-      this.activeIndex = index;
-      const slide = this.slides[index];
-      if (slide) this.scroller.scrollTop = slide.offsetTop;
+      return this.markEntry;
     }
 
     /**
-     * 跨页恢复进度：进度条目不在已加载条目里时逐页拉取列表直到找到，
-     * 找到后直接定位。上限 20 页，防止进度数据异常时无限请求；
+     * 记录阅读位置。last 每次切换都更新（进入浮层用它恢复）；
+     * farthest 只在向前推进时更新：记录点已加载且当前更靠后才覆盖。
+     * 未加载说明进度在更后面，一律不动——这是回翻顶部不丢进度的关键。
+     */
+    saveProgress() {
+      const post = this.posts[this.activeIndex];
+      if (!post) return;
+      const entry = this.marks();
+      const now = Date.now();
+      entry.last = { postId: post.id, at: now };
+      const far = entry.farthest;
+      const farIndex = far && far.postId ? this.posts.findIndex(item => item.id === far.postId) : -1;
+      if (!far || (farIndex >= 0 && this.activeIndex > farIndex)) {
+        entry.farthest = { postId: post.id, at: now };
+      }
+      writeMarks(this.source.sort, this.source.tag, entry);
+    }
+
+    /** 进入浮层定位：last 优先，其次 farthest，都找不到回到第 1 条 */
+    restoreProgress() {
+      const entry = this.marks();
+      let index = -1;
+      for (const slot of [entry.last, entry.farthest]) {
+        if (!slot || !slot.postId) continue;
+        const found = this.posts.findIndex(post => post.id === slot.postId);
+        if (found >= 0) { index = found; break; }
+      }
+      this.activeIndex = index >= 0 ? index : 0;
+      const slide = this.slides[this.activeIndex];
+      if (slide) this.scroller.scrollTop = slide.offsetTop;
+    }
+
+    /** 需要跨页恢复的目标帖子：last 优先，其次 farthest，都在本地则返回 null */
+    pendingRestorePostId() {
+      const entry = this.marks();
+      for (const slot of [entry.last, entry.farthest]) {
+        if (slot && slot.postId && !this.posts.some(post => post.id === slot.postId)) return slot.postId;
+      }
+      return null;
+    }
+
+    /**
+     * 跨页恢复进度：目标条目不在已加载条目里时逐页拉取列表直到找到，
+     * 找到后直接定位。上限 50 页，防止进度数据异常时无限请求；
      * 拉取期间浮层照常可用，定位时会打断当前浏览位置。
      */
-    async restoreAcrossPages(progress) {
-      if (this.restoringPages) return;
+    async restoreAcrossPages(postId) {
+      if (this.restoringPages || !postId) return;
       this.restoringPages = true;
       this.toast('正在恢复上次浏览位置…');
       try {
@@ -2634,7 +2760,7 @@
           const total = this.posts.length;
           for (let i = total - added.length; i < total; i++) this.appendSlide(i, false);
           this.updateCounter();
-          const found = this.posts.findIndex(post => post.id === progress.postId);
+          const found = this.posts.findIndex(post => post.id === postId);
           if (found >= 0) {
             // 用户从打开起已翻过页（或连播在走）说明正在浏览，
             // 强跳会打断；只提示位置，是否回去交给用户
@@ -3082,7 +3208,9 @@
 
       const clearBtn = el('button', '', '清除进度');
       clearBtn.addEventListener('click', () => {
-        store.remove('progress');
+        writeMarks(this.source.sort, this.source.tag, null);
+        this.markEntry = {};
+        this.updateJumpbar();
         this.toast('进度已清除');
       });
 
@@ -3152,7 +3280,7 @@
         ['点赞', '双击画面（图片帖双击为放大 / 缩小）'],
         ['打开原帖', '点击左下角标题'],
         ['清屏', '右下角「清屏」按钮：隐藏全部控件只看内容，再点还原'],
-        ['从头看 / 继续看', '左上角计数器右侧的两个小图标（回到顶部 / 跳向底部）：从头看回第 1 页最新，继续看跳到下一个没看过的条目'],
+        ['从头看 / 回到进度', '左上角计数器右侧的两个小图标：从头看回第 1 页最新并清掉阅读进度，另一个回到上次看到的最靠后位置'],
         ['关闭 / 退出', 'Esc']
       ];
 
