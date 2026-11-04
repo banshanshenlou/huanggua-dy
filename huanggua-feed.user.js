@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.25.0
+// @version      1.25.1
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.25.0';
+  const VERSION = '1.25.1';
 
   const CONFIG = {
     sel: {
@@ -76,9 +76,9 @@
     },
     // 浮层内保留视频元素的上限，超过会导致解码器不足
     videoPoolSize: 3,
-    videoLoadTimeoutMs: 15000,
+    videoLoadTimeoutMs: 10000,
     // 卡顿自愈：waiting/stalled 持续这么久仍无进展就原地重新拉流一次
-    videoStallRecoverMs: 8000,
+    videoStallRecoverMs: 5000,
     // 距列表末尾多少条开始自动翻页
     loadAhead: 5,
     // 主动切换时的锁定时长，避免一次滚轮手势连跳多条
@@ -202,6 +202,33 @@
     return node ? node.textContent.trim() : '';
   }
 
+  /**
+   * 站点把部分图片地址写在 openLightbox 的 JS 字符串里，`&` 被转义成字面
+   * `\u0026`。这种地址直接请求会失败（返回错误页而不是图片），必须先还原。
+   * 只处理 URL 会出现的转义形式，不引入 eval。
+   */
+  function decodeUrlEscapes(url) {
+    if (!url) return '';
+    let out = String(url);
+    if (out.indexOf('\\u') >= 0) {
+      out = out.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    }
+    if (out.indexOf('\\/') >= 0) out = out.split('\\/').join('/');
+    return out;
+  }
+
+  /** 图片地址归一化：还原转义并按当前页解析成绝对地址，失败返回空串 */
+  function imageUrl(raw) {
+    const decoded = decodeUrlEscapes(raw).trim();
+    if (!decoded) return '';
+    try {
+      const url = new URL(decoded, location.origin);
+      return /^https?:$/.test(url.protocol) ? url.href : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
   function toInt(value) {
     const n = parseInt(String(value || '').replace(/[^\d]/g, ''), 10);
     return Number.isFinite(n) ? n : 0;
@@ -256,14 +283,14 @@
         const v = wrap.querySelector(S.video);
         if (v) {
           return {
-            src: v.getAttribute('data-video-src') || '',
-            poster: v.getAttribute('poster') || '',
+            src: decodeUrlEscapes(v.getAttribute('data-video-src') || ''),
+            poster: imageUrl(v.getAttribute('poster') || ''),
             vid: v.getAttribute('data-video-vid') || ''
           };
         }
         return {
-          src: wrap.getAttribute('data-video-src') || '',
-          poster: wrap.getAttribute('data-poster') || '',
+          src: decodeUrlEscapes(wrap.getAttribute('data-video-src') || ''),
+          poster: imageUrl(wrap.getAttribute('data-poster') || ''),
           vid: wrap.getAttribute('data-video-vid') || ''
         };
       })
@@ -274,16 +301,28 @@
     const imageWraps = [...card.querySelectorAll(S.mediaWrap)]
       .filter(wrap => !wrap.classList.contains('is-video'));
 
+    // 图片地址：data-original 是站点自己的大图属性，值未转义，首选；
+    // openLightbox 的 onclick 含转义字符，只作兜底；img.src 是缩略图，最后兜底。
     const images = imageWraps.map(wrap => {
+      const img = wrap.querySelector('img');
+      const original = img ? img.getAttribute('data-original') || img.getAttribute('data-src') : '';
+      const fromOriginal = imageUrl(original);
+      if (fromOriginal) return fromOriginal;
       const onclick = wrap.getAttribute('onclick') || '';
       const matched = onclick.match(/openLightbox\(\s*['"]([^'"]+)['"]/);
-      if (matched) return matched[1];
-      const img = wrap.querySelector('img');
-      return img ? img.src : '';
+      if (matched) {
+        const fromLightbox = imageUrl(matched[1]);
+        if (fromLightbox) return fromLightbox;
+      }
+      return img ? imageUrl(img.getAttribute('src') || '') : '';
     }).filter(Boolean);
 
-    // 每张图是否带 GIF 标记，保存时据此决定扩展名
-    const imageGif = imageWraps.map(wrap => !!wrap.querySelector('.gif-badge'));
+    // 每张图是否带 GIF 标记，保存时据此决定扩展名；与 images 同源同序，
+    // 地址解析失败的条目两边一起剔除，否则索引会错位
+    const imageGif = imageWraps
+      .map((wrap, i) => ({ gif: !!wrap.querySelector('.gif-badge'), url: images[i] }))
+      .filter(item => item.url)
+      .map(item => item.gif);
 
     const excerptEl = card.querySelector(S.excerpt);
     const embedEl = card.querySelector(S.embed);
@@ -375,13 +414,13 @@
     const card = doc.querySelector(CONFIG.sel.detailCard);
     if (!card) throw new Error('详情页未返回帖子内容');
     const videos = [...card.querySelectorAll(CONFIG.sel.weiboVideo)].map(video => {
-      const src = new URL(video.getAttribute('data-video-src'), location.origin);
+      const src = new URL(decodeUrlEscapes(video.getAttribute('data-video-src') || ''), location.origin);
       // 镜像站也通过当前站点的中转接口播放，保持同源与站点正常的 Referer。
       if (src.pathname === '/api/weibo_video.php') src.host = location.host;
       src.protocol = src.host === location.host ? location.protocol : src.protocol;
       return {
         src: src.href,
-        poster: video.getAttribute('poster') || '',
+        poster: imageUrl(video.getAttribute('poster') || ''),
         vid: video.getAttribute('data-video-vid') || ''
       };
     }).filter(video => /^https?:/.test(video.src));
@@ -1278,12 +1317,19 @@
         if (!this.opened || !img.isConnected || this.currentMediaItem(index)?.src !== src) return;
         img.src = src;
         this.setImageLoading(slide, false);
+        this.clearMediaTip(slide);
         this.updateCounter();
       };
       probe.onerror = () => {
         if (this.posts[index] !== post) return;
         if (!this.opened || !img.isConnected || this.currentMediaItem(index)?.src !== src) return;
         this.setImageLoading(slide, false);
+        // 不能只留黑屏：地址失效或 CDN 异常时给出重试入口
+        this.showMediaTip(slide, '图片加载失败', '重试', () => {
+          this.clearMediaTip(slide);
+          img.removeAttribute('src');
+          this.applyImage(index);
+        });
       };
       probe.src = src;
     }
@@ -2305,14 +2351,12 @@
     }
 
     /**
-     * 缓冲策略：当前条目全量缓冲；桌面宽带给下一条预缓冲，切过去首帧不用等；
-     * 其余（包括移动端的下一条）只取元数据，避免多路并发抢带宽。
+     * 缓冲策略：只有当前条目全量缓冲。实测视频源带宽 87~1500KB/s 波动剧烈，
+     * 多路并发会互相挤占带宽、把当前视频拉进卡顿，邻条一律只取元数据
+     * （仍会完成 DNS/TLS 与头部握手，切过去少等一段）。
      */
     preloadFor(index) {
-      if (index === this.activeIndex) return 'auto';
-      const narrow = window.matchMedia('(max-width: 640px)').matches;
-      if (!narrow && index === this.activeIndex + 1) return 'auto';
-      return 'metadata';
+      return index === this.activeIndex ? 'auto' : 'metadata';
     }
 
     /**
