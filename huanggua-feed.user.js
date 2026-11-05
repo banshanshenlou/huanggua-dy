@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.26.2
+// @version      1.26.3
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.26.2';
+  const VERSION = '1.26.3';
 
   const CONFIG = {
     sel: {
@@ -580,21 +580,29 @@
   color:rgba(255,255,255,.55);font-size:12.5px;cursor:pointer;pointer-events:auto;}
 .dyf-excerpt-toggle:hover{color:rgba(255,255,255,.85)}
 
-/* 保留毛玻璃圆底。不用 mix-blend-mode：它与 backdrop-filter 都需要独占层叠组，
-   无法共存（混了会变成脏色块）。改用深色描边包住白色图标：
-   白底靠描边勾轮廓，深底靠白底自身，两种背景都清楚。 */
+/* 毛玻璃圆底与反色图标拆成两层，互不干扰：
+   ::before 单独承载 backdrop-filter，它自己不需要混合；
+   图标与文字用 mix-blend-mode:difference 与「圆底 + 画面」混合，
+   白底变黑、深底变白，无需描边，也不采样画面。
+   前提：本元素与 .dyf-actions 都不能创建层叠上下文，否则混合看不到画面。 */
 .dyf-actions{position:absolute;right:12px;bottom:110px;display:flex;flex-direction:column;
-  gap:16px;align-items:center;z-index:2;}
-.dyf-act{background:rgba(255,255,255,.12);border:0;color:#fff;width:46px;height:46px;
+  gap:16px;align-items:center;}
+.dyf-act{position:relative;background:transparent;border:0;color:#fff;width:46px;height:46px;
   border-radius:50%;cursor:pointer;font-size:11px;line-height:1.1;display:flex;
   flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  transition:transform .15s;}
+.dyf-act::before{content:'';position:absolute;inset:0;border-radius:50%;
+  background:rgba(255,255,255,.12);
   backdrop-filter:blur(6px) saturate(1.1);
-  box-shadow:0 1px 5px rgba(0,0,0,.22),inset 0 0 0 1px rgba(255,255,255,.18);
-  text-shadow:0 0 2px rgba(0,0,0,.95),0 0 5px rgba(0,0,0,.8),0 1px 2px rgba(0,0,0,.7);
-  transition:background .15s,transform .15s;}
-.dyf-act svg{filter:drop-shadow(0 0 1px rgba(0,0,0,.95)) drop-shadow(0 0 3px rgba(0,0,0,.85)) drop-shadow(0 1px 3px rgba(0,0,0,.6));}
-.dyf-act:hover{background:rgba(255,255,255,.24)}
-.dyf-act:active{transform:scale(.92)}
+  box-shadow:0 1px 5px rgba(0,0,0,.22),inset 0 0 0 1px rgba(255,255,255,.18);}
+.dyf-act:hover::before{background:rgba(255,255,255,.24)}
+/* 按下不用 transform：会给按钮自身创建层叠上下文，使子元素反色在按压瞬间失效 */
+.dyf-act:active::before{background:rgba(255,255,255,.32)}
+.dyf-act>svg,.dyf-act>span{mix-blend-mode:difference;}
+/* 点亮态不参与反色：深色实心底 + 强调色 */
+.dyf-act.is-on::before{background:rgba(0,0,0,.6);box-shadow:0 0 0 1px rgba(255,255,255,.18);}
+.dyf-act.is-on>svg,.dyf-act.is-on>span{mix-blend-mode:normal;color:#ffd23f;}
+.dyf-act.is-local::before{outline:1px dashed rgba(255,255,255,.55);outline-offset:-1px;}
 /* 清屏模式：隐藏全部叠加控件只留媒体画面与清屏按钮；隐藏与恢复同速淡入淡出 */
 #dyf-root .dyf-counter,#dyf-root .dyf-hud,#dyf-root .dyf-progress,#dyf-root .dyf-time,
 #dyf-root .dyf-caption,#dyf-root .dyf-actions .dyf-act,#dyf-root .dyf-actions .dyf-speed-group{transition:opacity .2s,transform .15s;}
