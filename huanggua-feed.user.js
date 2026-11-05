@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.28.3
+// @version      1.29.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -53,7 +53,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.28.3';
+  const VERSION = '1.29.0';
 
   const CONFIG = {
     sel: {
@@ -1597,8 +1597,9 @@
 
       actions.appendChild(this.buildSpeedGroup());
 
-      // 横屏入口：跟其他按钮同一列、同尺寸、同间距，默认隐藏，
-      // 只在「单个视频 + 横向比例」时由 syncLandscapeBtn 打开
+      // 横屏入口：排在清屏上方，紧贴底部区域；只在「单个视频 + 横向比例」时
+      // 由 syncLandscapeBtn 打开。放在这个位置后，横屏视频比竖屏视频多一格，
+      // 底部锚定会把上方按钮整体顶高一格。
       const landscapeBtn = el('button', 'dyf-act');
       landscapeBtn.dataset.act = 'landscape';
       landscapeBtn.type = 'button';
@@ -2761,10 +2762,9 @@
       const slide = this.slides[state.index];
       this.showMediaTip(slide, message, '重试', () => {
         if (this.videoStates.get(video) !== state || state.index !== this.activeIndex) return;
-        state.retried = false;
         this.clearMediaTip(slide);
-        if (state.vid) void this.recoverVideo(video, message);
-        else { video.load(); this.playCurrent(); }
+        // 直接换元素：重试原元素对已挂起的解码器无效，这也是用户看到“重试也不行”的原因
+        this.rebuildVideo(state.index);
       });
     }
 
@@ -2830,7 +2830,7 @@
       return video;
     }
 
-    releaseVideo(index) {
+    releaseVideo(index, discard) {
       const video = this.videos.get(index);
       if (!video) return;
       this.setVideoLoading(video, false);
@@ -2846,7 +2846,8 @@
       video.removeAttribute('data-src');
       try { video.load(); } catch (e) { /* 忽略 */ }
       video.remove();
-      if (this.videoPool.length < CONFIG.videoPoolSize) this.videoPool.push(video);
+      // discard：元素可能已被浏览器挂起/解码器释放，不能再放回池里喂给下一条
+      if (!discard && this.videoPool.length < CONFIG.videoPoolSize) this.videoPool.push(video);
     }
 
     /**
@@ -2925,19 +2926,60 @@
       }, 1500);
     }
 
-    /** 后台暂停等待计时；返回前台仅恢复先前播放或后台激活的视频。 */
+    /**
+     * 后台：全部保留的视频都停，不只是当前条目；同时清掉加载超时与卡顿自愈计时器，
+     * 避免在后台被判超时而进入错误态。
+     * 回前台：用户后台前本来在播才恢复；元素被浏览器挂起（readyState 掉到 2 以下或
+     * 源被丢弃）时直接重建元素，不能只调 play() —— 挂起的解码器再 load() 也救不回来，
+     * 这正是“后台转前台后一直加载、重试也不行”的成因。
+     */
     onVisibilityChange() {
-      const video = this.videos.get(this.activeIndex);
+      const hidden = document.hidden || document.visibilityState !== 'visible';
+      const index = this.activeIndex;
+      const video = this.videos.get(index);
       const state = video && this.videoStates.get(video);
       if (!state) return;
-      if (document.hidden) {
+
+      if (hidden) {
         state.resumeOnVisible = state.resumeOnVisible || !video.paused;
-        this.setVideoLoading(video, false);
-        video.pause();
-      } else if (state.resumeOnVisible) {
-        state.resumeOnVisible = false;
-        this.playCurrent();
+        for (const [, item] of this.videos) {
+          const st = this.videoStates.get(item);
+          if (st) {
+            clearTimeout(st.timer);
+            st.timer = null;
+            clearTimeout(st.stallTimer);
+            st.stallTimer = null;
+          }
+          this.setVideoLoading(item, false);
+          if (!item.paused) item.pause();
+        }
+        return;
       }
+
+      if (!state.resumeOnVisible) return;
+      state.resumeOnVisible = false;
+      // 元素被挂起：重建比等超时快，也比 video.load() 可靠
+      if (video.readyState < 2 || video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) {
+        this.rebuildVideo(index);
+        return;
+      }
+      this.playCurrent();
+    }
+
+    /**
+     * 换一个新的 video 元素重试当前条目。
+     * 旧元素可能已被浏览器释放解码器，load() 无法恢复，必须从 DOM 与池里一并丢弃。
+     */
+    rebuildVideo(index) {
+      const state = this.videoStates.get(this.videos.get(index));
+      const retried = state ? state.retried : false;
+      this.releaseVideo(index, true);
+      const video = this.ensureVideo(index);
+      if (!video) return;
+      const fresh = this.videoStates.get(video);
+      // 已续签过一次就保持标记，避免重建与续签互相触发成循环请求
+      if (fresh) fresh.retried = retried;
+      this.playCurrent();
     }
 
     playCurrent() {
