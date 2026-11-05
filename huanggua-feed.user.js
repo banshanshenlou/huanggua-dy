@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.28.0
+// @version      1.28.1
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.28.0';
+  const VERSION = '1.28.1';
 
   const CONFIG = {
     sel: {
@@ -547,25 +547,12 @@
    铺满需要 cover：裁掉少量边缘，与抖音横屏一致 */
 .dyf-slide.is-landscape .dyf-media video{width:100%;height:100%;max-width:none;max-height:none;
   object-fit:cover;}
-/* 横屏入口按钮：只给横屏比例的单个视频用，避开右侧操作栏与底部文案 */
-.dyf-landscape-btn{position:absolute;right:76px;bottom:132px;z-index:3;
-  width:38px;height:38px;border-radius:50%;display:none;cursor:pointer;
-  background:rgba(255,255,255,.12);border:0;padding:0;
-  box-shadow:0 1px 6px rgba(0,0,0,.2),inset 0 0 0 1px rgba(255,255,255,.18);
-  backdrop-filter:blur(6px) saturate(1.1);
-  align-items:center;justify-content:center;}
-.dyf-landscape-btn.dyf-show{display:flex;}
-.dyf-landscape-btn>svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
-  stroke-linecap:round;stroke-linejoin:round;color:#fff;mix-blend-mode:difference;}
-.dyf-landscape-btn:hover{background:rgba(255,255,255,.26);}
-.dyf-landscape-btn:active{background:rgba(255,255,255,.34);}
 /* 横屏态的退出条：全屏沉浸时只留它 */
 .dyf-landscape-bar{position:absolute;top:0;right:0;display:none;padding:14px;}
 #dyf-root.dyf-landscape .dyf-landscape-bar{display:flex;}
 #dyf-root.dyf-landscape .dyf-counter,#dyf-root.dyf-landscape .dyf-hud,
 #dyf-root.dyf-landscape .dyf-actions,#dyf-root.dyf-landscape .dyf-caption,
 #dyf-root.dyf-landscape .dyf-progress,#dyf-root.dyf-landscape .dyf-time,
-#dyf-root.dyf-landscape .dyf-landscape-btn,
 #dyf-root.dyf-landscape .dyf-media-tip{opacity:0;pointer-events:none;}
 /* 横滑轮播预览层：挂在 slide 上（在 .dyf-media 之前），object-fit:contain
    铺满容器与主图 contain 后的视觉一致，平移量独立于媒体容器计算 */
@@ -631,7 +618,8 @@
 .dyf-act:hover::before{background:rgba(255,255,255,.24)}
 /* 按下不用 transform：会给按钮自身创建层叠上下文，使子元素反色在按压瞬间失效 */
 .dyf-act:active::before{background:rgba(255,255,255,.32)}
-.dyf-act>svg,.dyf-act>span{mix-blend-mode:difference;}
+/* 图标要压在圆底之上：::before 是定位元素，不提升子元素就会被盖住（is-on 深色底尤其明显） */
+.dyf-act>svg,.dyf-act>span{position:relative;mix-blend-mode:difference;}
 /* 点亮态不参与反色：深色实心底 + 强调色 */
 .dyf-act.is-on::before{background:rgba(0,0,0,.6);box-shadow:0 0 0 1px rgba(255,255,255,.18);}
 .dyf-act.is-on>svg,.dyf-act.is-on>span{mix-blend-mode:normal;color:#ffd23f;}
@@ -695,7 +683,7 @@
   backdrop-filter:blur(6px) saturate(1.1);}
 .dyf-hud-btn:hover::before{background:rgba(255,255,255,.26)}
 .dyf-hud-btn:active::before{background:rgba(255,255,255,.34)}
-.dyf-hud-btn>svg{mix-blend-mode:difference;}
+.dyf-hud-btn>svg{position:relative;mix-blend-mode:difference;}
 .dyf-hud-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
   stroke-linecap:round;stroke-linejoin:round;}
 /* 窄屏折叠：默认只显示展开箭头，点击后展开全部按钮 */
@@ -726,7 +714,7 @@
   background:rgba(255,255,255,.12);
   box-shadow:0 1px 6px rgba(0,0,0,.2),inset 0 0 0 1px rgba(255,255,255,.16);
   backdrop-filter:blur(6px) saturate(1.1);}
-.dyf-counter-text,.dyf-jumpbar .dyf-hud-btn>svg{mix-blend-mode:difference;}
+.dyf-counter-text,.dyf-jumpbar .dyf-hud-btn>svg{position:relative;mix-blend-mode:difference;}
 .dyf-jumpbar{position:relative;display:flex;flex-direction:row;gap:4px;align-items:center;}
 .dyf-jumpbar .dyf-hud-btn{width:26px;height:26px;}
 .dyf-jumpbar .dyf-hud-btn::before{background:transparent;border:0;backdrop-filter:none;}
@@ -1301,10 +1289,7 @@
       }
 
       slide.appendChild(caption);
-      if (this.currentMediaItem(index)?.type === 'video') {
-        this.buildProgress(slide);
-        slide.appendChild(this.buildLandscapeBtn(slide));
-      }
+      if (this.currentMediaItem(index)?.type === 'video') this.buildProgress(slide);
       // 媒体位置不再用独立角标显示，统一合并进左上角内容计数器（updateCounter）
     }
 
@@ -1459,42 +1444,21 @@
       }
     }
 
-    /** 横屏入口：横屏比例的单个视频才显示（竖屏视频、图集、多视频不显示） */
-    buildLandscapeBtn(slide) {
-      const btn = el('button', 'dyf-landscape-btn');
-      btn.type = 'button';
-      btn.dataset.act = 'landscape';
-      btn.title = '横屏观看';
-      btn.setAttribute('aria-label', '横屏观看');
-      btn.innerHTML = iconLandscape();
-      btn.addEventListener('click', event => {
-        event.stopPropagation();
-        const index = Number(slide.dataset.index);
-        if (index !== this.activeIndex) return;
-        this.setLandscape(true, index);
-      });
-      return btn;
-    }
-
     /**
-     * 刷新横屏入口的显隐：只对「单个视频 + 横屏比例 + 当前激活」的条目出现。
+     * 刷新横屏入口显隐：只对「单个视频 + 横向比例」的当前条目出现。
      * videoWidth/videoHeight 要等 metadata，所以 loadedmetadata 里也会再调一次。
      */
-    updateLandscapeBtn(index) {
-      const slide = this.slides[index];
-      if (!slide) return;
-      const btn = slide.querySelector('.dyf-landscape-btn');
-      if (!btn) return;
-      const video = this.videos.get(index);
-      const post = this.posts[index];
-      const single = post ? this.mediaList(post).length === 1 : false;
+    syncLandscapeBtn() {
+      const els = this.actEls;
+      const post = this.posts[this.activeIndex];
+      if (!els || !els.landscape || !post) return;
+      const video = this.videos.get(this.activeIndex);
       const w = video ? video.videoWidth : 0;
       const h = video ? video.videoHeight : 0;
+      const single = this.mediaList(post).length === 1;
       // 1.1 容差：近方形的视频不当作横屏，避免按钮在边界上闪
       const wide = w > 0 && h > 0 && w > h * 1.1;
-      const show = !!video && single && wide &&
-        index === this.activeIndex && this.landscapeIndex !== index;
-      btn.classList.toggle('dyf-show', show);
+      els.landscape.style.display = (video && single && wide) ? '' : 'none';
     }
 
     /**
@@ -1520,8 +1484,8 @@
         slide.classList.add('is-landscape');
         this.scroller.scrollTop = slide.offsetTop;
       }
-      // 横屏时入口按钮被隐藏，退出靠顶部退出条或 Esc
-      this.updateLandscapeBtn(at);
+      // 横屏时入口按钮跟随操作栏一起隐藏，退出靠顶部退出条或 Esc
+      this.syncLandscapeBtn();
     }
 
     /** 底部进度条：显示已播时长与总时长，点击可跳转 */
@@ -1627,6 +1591,18 @@
 
       actions.appendChild(this.buildSpeedGroup());
 
+      // 横屏入口：跟其他按钮同一列、同尺寸、同间距，默认隐藏，
+      // 只在「单个视频 + 横向比例」时由 syncLandscapeBtn 打开
+      const landscapeBtn = el('button', 'dyf-act');
+      landscapeBtn.dataset.act = 'landscape';
+      landscapeBtn.type = 'button';
+      landscapeBtn.title = '横屏观看';
+      landscapeBtn.setAttribute('aria-label', '横屏观看');
+      landscapeBtn.innerHTML = iconLandscape() + '<span>横屏</span>';
+      landscapeBtn.style.display = 'none';
+      landscapeBtn.addEventListener('click', () => this.setLandscape(true, this.activeIndex));
+      actions.appendChild(landscapeBtn);
+
       // 清屏：抖音式一键隐藏全部控件，再点还原
       const cleanBtn = el('button', 'dyf-act');
       cleanBtn.dataset.act = 'clean';
@@ -1635,7 +1611,8 @@
       cleanBtn.addEventListener('click', () => this.toggleCleanScreen(cleanBtn));
       actions.appendChild(cleanBtn);
 
-      this.actEls = { like, fav, comment: commentBtn, save: saveBtn, autonext: nextBtn, clean: cleanBtn };
+      this.actEls = { like, fav, comment: commentBtn, save: saveBtn, autonext: nextBtn,
+        landscape: landscapeBtn, clean: cleanBtn };
       return actions;
     }
 
@@ -1669,6 +1646,8 @@
       els.autonext.classList.toggle('is-on', !!settings.autoNext);
       const nextLabel = els.autonext.querySelector('span');
       if (nextLabel) nextLabel.textContent = settings.autoNext ? '连播' : '单条';
+
+      this.syncLandscapeBtn();
     }
 
     /** 清屏模式：隐藏全部叠加控件只留画面；状态跟实例走，翻页不退出 */
@@ -1736,7 +1715,7 @@
 
       const isInteractive = target =>
         !!(target.closest && target.closest(
-          '.dyf-actions, .dyf-progress, .dyf-embed-link, .dyf-title, .dyf-excerpt-toggle, .dyf-landscape-btn'));
+          '.dyf-actions, .dyf-progress, .dyf-embed-link, .dyf-title, .dyf-excerpt-toggle'));
 
       // 文字卡内部需要原生滚动，手势不接管；展开后的摘要同理
       const inTextbox = target =>
@@ -2587,7 +2566,7 @@
         const slide = video.closest('.dyf-slide');
         if (!slide) return;
         const index = Number(slide.dataset.index);
-        if (this.videos.get(index) === video) this.updateLandscapeBtn(index);
+        if (this.videos.get(index) === video && index === this.activeIndex) this.syncLandscapeBtn();
       });
       video.addEventListener('durationchange', syncProgress);
       video.addEventListener('seeked', syncProgress);
@@ -2919,8 +2898,6 @@
       this.syncActions();
       this.updateCounter();
       this.updateActiveClass();
-      this.updateLandscapeBtn(index);
-      if (previous !== index) this.updateLandscapeBtn(previous);
       this.saveProgress();
       this.updateJumpbar();
       this.maybeLoadMore();
@@ -3875,11 +3852,11 @@
       '<polyline points="6 14 12 8 18 14"/><line x1="12" y1="8" x2="12" y2="20"/></svg>';
   }
 
-  /** 横屏：四角向外展开，与抖音横屏入口同语义 */
+  /** 横屏：竖屏手机与横放平板交叠，与抖音横屏入口同语义 */
   function iconLandscape() {
     return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M14 4h6v6"/><path d="M10 20H4v-6"/>' +
-      '<path d="M20 4l-7 7"/><path d="M4 20l7-7"/></svg>';
+      '<rect x="2.5" y="3.5" width="7.5" height="13" rx="2"/>' +
+      '<rect x="8" y="8.5" width="13.5" height="9" rx="2"/></svg>';
   }
 
   /** 退出横屏：四角向内收拢 */
@@ -3913,9 +3890,9 @@
       '<line x1="12" y1="16.4" x2="12" y2="16.5"/></svg>';
   }
 
+  /** 暂停时中央叠加的是「点击后会发生什么」：显示播放三角，与抖音一致 */
   function iconPause() {
-    return '<svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/>' +
-      '<rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M8 4.6v14.8L20 12z"/></svg>';
   }
 
   function iconSpeed() {
