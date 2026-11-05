@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.26.3
+// @version      1.26.4
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.26.3';
+  const VERSION = '1.26.4';
 
   const CONFIG = {
     sel: {
@@ -647,11 +647,22 @@
 .dyf-act svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;
   stroke-linecap:round;stroke-linejoin:round;}
 
-.dyf-hud{position:absolute;top:0;right:0;display:flex;gap:8px;padding:14px;z-index:3;}
-.dyf-hud-btn{background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.18);
-  color:#fff;border-radius:50%;width:36px;height:36px;padding:0;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);}
-.dyf-hud-btn:hover{background:rgba(0,0,0,.75)}
+/* HUD 与计数器一律不设 z-index：设了会创建独立层叠上下文，
+   内部图标的 difference 混合就只与空容器生效，反色失效。
+   不设置时靠 DOM 顺序（在 scroller 之后）就能盖在媒体之上。 */
+.dyf-hud{position:absolute;top:0;right:0;display:flex;gap:8px;padding:14px;}
+/* 圆底与图标分两层：::before 只承载毛玻璃；图标自己用 difference 与「圆底 + 画面」混合，
+   白底变黑、深底变白，无需描边。按下不用 transform（会给按钮建层叠上下文）。 */
+.dyf-hud-btn{position:relative;background:transparent;border:0;color:#fff;
+  border-radius:50%;width:36px;height:36px;padding:0;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;}
+.dyf-hud-btn::before{content:'';position:absolute;inset:0;border-radius:50%;box-sizing:border-box;
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);
+  box-shadow:0 1px 6px rgba(0,0,0,.2),inset 0 0 0 1px rgba(255,255,255,.18);
+  backdrop-filter:blur(6px) saturate(1.1);}
+.dyf-hud-btn:hover::before{background:rgba(255,255,255,.26)}
+.dyf-hud-btn:active::before{background:rgba(255,255,255,.34)}
+.dyf-hud-btn>svg{mix-blend-mode:difference;}
 .dyf-hud-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
   stroke-linecap:round;stroke-linejoin:round;}
 /* 窄屏折叠：默认只显示展开箭头，点击后展开全部按钮 */
@@ -670,20 +681,24 @@
   max-width:70vw;text-align:center;}
 .dyf-toast.dyf-show{opacity:1}
 
-/* 从头看 / 继续看：嵌入左上角计数器胶囊右侧，常驻显示。
-   计数器改 flex 布局（文本 + 按钮组），按钮 26px 圆形透明融入计数器底色，
-   hover 圆形高亮、按压各自缩放；显示条件由翻页状态驱动（见 updateJumpbar），
-   无淡出定时器。hud-btn 的 36px 尺寸在此场景缩小为 26px */
+/* 从头看 / 回到进度：嵌入左上角计数器胶囊右侧，常驻显示。
+   计数器胶囊底色与毛玻璃也挪到 ::before，这样胶囊内的文字与按钮图标
+   能继续看到下方画面并做 difference 反色（胶囊自身带 backdrop-filter 会
+   形成层叠上下文，内部混合只与胶囊背景算，反色就失去意义）。
+   按钮组的圆底保持透明，不叠加第二层色块。 */
 .dyf-counter{position:absolute;top:16px;left:18px;font-size:12.5px;
-  color:rgba(255,255,255,.7);background:rgba(0,0,0,.45);padding:4px 6px 4px 11px;
-  border-radius:20px;z-index:3;backdrop-filter:blur(6px);
+  color:#fff;padding:4px 6px 4px 11px;border-radius:20px;
   display:flex;align-items:center;gap:8px;}
-.dyf-jumpbar{display:flex;flex-direction:row;gap:4px;align-items:center;}
-.dyf-jumpbar .dyf-hud-btn{width:26px;height:26px;background:transparent;
-  backdrop-filter:none;-webkit-backdrop-filter:none;border:0;}
-.dyf-jumpbar .dyf-hud-btn svg{width:14px;height:14px;}
-.dyf-jumpbar .dyf-hud-btn:hover{background:rgba(255,255,255,.15);}
-.dyf-jumpbar .dyf-hud-btn:active{transform:scale(.92);}
+.dyf-counter::before{content:'';position:absolute;inset:0;border-radius:20px;
+  background:rgba(255,255,255,.12);
+  box-shadow:0 1px 6px rgba(0,0,0,.2),inset 0 0 0 1px rgba(255,255,255,.16);
+  backdrop-filter:blur(6px) saturate(1.1);}
+.dyf-counter-text,.dyf-jumpbar .dyf-hud-btn>svg{mix-blend-mode:difference;}
+.dyf-jumpbar{position:relative;display:flex;flex-direction:row;gap:4px;align-items:center;}
+.dyf-jumpbar .dyf-hud-btn{width:26px;height:26px;}
+.dyf-jumpbar .dyf-hud-btn::before{background:transparent;border:0;backdrop-filter:none;}
+.dyf-jumpbar .dyf-hud-btn:hover::before{background:rgba(255,255,255,.18);}
+.dyf-jumpbar .dyf-hud-btn>svg{width:14px;height:14px;}
 
 .dyf-progress{position:absolute;left:0;right:0;bottom:0;height:4px;
   background:rgba(255,255,255,.22);z-index:2;cursor:pointer;}
