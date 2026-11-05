@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.27.0
+// @version      1.28.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.27.0';
+  const VERSION = '1.28.0';
 
   const CONFIG = {
     sel: {
@@ -534,6 +534,39 @@
 .dyf-media img.dyf-single-image{will-change:transform;touch-action:none;-webkit-user-drag:none;user-select:none;}
 .dyf-media img.dyf-single-image.dyf-anim{transition:transform .22s ease-out;}
 .dyf-media video{background:#000;}
+/* 视频双指缩放：同样靠 transform，加过渡只在收手时补一帧动画 */
+.dyf-media video.dyf-video{will-change:transform;touch-action:none;}
+.dyf-media video.dyf-video.dyf-anim{transition:transform .22s ease-out;}
+
+/* 横屏：把媒体层换成“宽=屏高、高=屏宽”再转 90°。
+   容器变高后视频 contain 的可用长边变成屏幕高度，旋转后横向视频才能铺满。 */
+.dyf-slide.is-landscape .dyf-media{inset:auto;top:50%;left:50%;
+  width:100vh;width:100dvh;height:100vw;
+  transform:translate(-50%,-50%) rotate(90deg);}
+/* 旋转后容器是「屏高 × 屏宽」，16:9 视频 contain 只占屏高 82%，两侧留黑边；
+   铺满需要 cover：裁掉少量边缘，与抖音横屏一致 */
+.dyf-slide.is-landscape .dyf-media video{width:100%;height:100%;max-width:none;max-height:none;
+  object-fit:cover;}
+/* 横屏入口按钮：只给横屏比例的单个视频用，避开右侧操作栏与底部文案 */
+.dyf-landscape-btn{position:absolute;right:76px;bottom:132px;z-index:3;
+  width:38px;height:38px;border-radius:50%;display:none;cursor:pointer;
+  background:rgba(255,255,255,.12);border:0;padding:0;
+  box-shadow:0 1px 6px rgba(0,0,0,.2),inset 0 0 0 1px rgba(255,255,255,.18);
+  backdrop-filter:blur(6px) saturate(1.1);
+  align-items:center;justify-content:center;}
+.dyf-landscape-btn.dyf-show{display:flex;}
+.dyf-landscape-btn>svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;color:#fff;mix-blend-mode:difference;}
+.dyf-landscape-btn:hover{background:rgba(255,255,255,.26);}
+.dyf-landscape-btn:active{background:rgba(255,255,255,.34);}
+/* 横屏态的退出条：全屏沉浸时只留它 */
+.dyf-landscape-bar{position:absolute;top:0;right:0;display:none;padding:14px;}
+#dyf-root.dyf-landscape .dyf-landscape-bar{display:flex;}
+#dyf-root.dyf-landscape .dyf-counter,#dyf-root.dyf-landscape .dyf-hud,
+#dyf-root.dyf-landscape .dyf-actions,#dyf-root.dyf-landscape .dyf-caption,
+#dyf-root.dyf-landscape .dyf-progress,#dyf-root.dyf-landscape .dyf-time,
+#dyf-root.dyf-landscape .dyf-landscape-btn,
+#dyf-root.dyf-landscape .dyf-media-tip{opacity:0;pointer-events:none;}
 /* 横滑轮播预览层：挂在 slide 上（在 .dyf-media 之前），object-fit:contain
    铺满容器与主图 contain 后的视觉一致，平移量独立于媒体容器计算 */
 .dyf-slide-preview{position:absolute;left:0;top:0;width:100%;height:100%;
@@ -844,6 +877,8 @@
       this.commentPrefetchTimer = null;
       // 当前 (sort, tag) 的阅读位置条目缓存，避免每次翻页都读存储
       this.markEntry = null;
+      // 处于横屏态的条目索引，-1 表示不在横屏
+      this.landscapeIndex = -1;
       // 已并行预载过的图片地址：窗口回收只清节点，缓存命中靠它去重
       this.warmedImages = new Set();
 
@@ -963,6 +998,9 @@
       // 操作栏节点随 root 一起销毁，旧引用必须清掉，否则重开后会操作已移除的节点
       this.actEls = null;
       this.actionsEl = null;
+      // 横屏态随实例销毁复位
+      this.landscapeIndex = -1;
+      this.landscapeBarEl = null;
 
       removeStyle();
       document.documentElement.classList.remove('dyf-locked');
@@ -1135,6 +1173,20 @@
       this.actionsEl = this.buildActions();
       root.appendChild(this.actionsEl);
 
+      // 横屏态只有这一排：全屏沉浸时控件全隐，留一个退出入口
+      const landscapeBar = el('div', 'dyf-landscape-bar');
+      const landscapeExit = el('button', 'dyf-hud-btn');
+      landscapeExit.dataset.act = 'landscape-exit';
+      landscapeExit.title = '退出横屏';
+      landscapeExit.setAttribute('aria-label', '退出横屏');
+      landscapeExit.innerHTML = iconLandscapeExit();
+      landscapeExit.addEventListener('click', event => {
+        event.stopPropagation();
+        this.setLandscape(false);
+      });
+      landscapeBar.appendChild(landscapeExit);
+      root.appendChild(landscapeBar);
+
       // 浮层挂在 documentElement 上：body 若有 transform/filter 会破坏 fixed 定位，
       // 部分移动端模板确实会加这类样式
       document.documentElement.appendChild(root);
@@ -1151,6 +1203,7 @@
       this.commentsBodyEl = comments.body;
       this.commentsTitleEl = comments.title;
       this.commentsSheetEl = comments.sheet;
+      this.landscapeBarEl = landscapeBar;
 
       // 触摸滚动由原生 scroll-snap 处理，这里只同步当前项
       this.io = new IntersectionObserver(entries => {
@@ -1248,7 +1301,10 @@
       }
 
       slide.appendChild(caption);
-      if (this.currentMediaItem(index)?.type === 'video') this.buildProgress(slide);
+      if (this.currentMediaItem(index)?.type === 'video') {
+        this.buildProgress(slide);
+        slide.appendChild(this.buildLandscapeBtn(slide));
+      }
       // 媒体位置不再用独立角标显示，统一合并进左上角内容计数器（updateCounter）
     }
 
@@ -1401,6 +1457,71 @@
         probe.referrerPolicy = 'no-referrer';
         probe.src = src;
       }
+    }
+
+    /** 横屏入口：横屏比例的单个视频才显示（竖屏视频、图集、多视频不显示） */
+    buildLandscapeBtn(slide) {
+      const btn = el('button', 'dyf-landscape-btn');
+      btn.type = 'button';
+      btn.dataset.act = 'landscape';
+      btn.title = '横屏观看';
+      btn.setAttribute('aria-label', '横屏观看');
+      btn.innerHTML = iconLandscape();
+      btn.addEventListener('click', event => {
+        event.stopPropagation();
+        const index = Number(slide.dataset.index);
+        if (index !== this.activeIndex) return;
+        this.setLandscape(true, index);
+      });
+      return btn;
+    }
+
+    /**
+     * 刷新横屏入口的显隐：只对「单个视频 + 横屏比例 + 当前激活」的条目出现。
+     * videoWidth/videoHeight 要等 metadata，所以 loadedmetadata 里也会再调一次。
+     */
+    updateLandscapeBtn(index) {
+      const slide = this.slides[index];
+      if (!slide) return;
+      const btn = slide.querySelector('.dyf-landscape-btn');
+      if (!btn) return;
+      const video = this.videos.get(index);
+      const post = this.posts[index];
+      const single = post ? this.mediaList(post).length === 1 : false;
+      const w = video ? video.videoWidth : 0;
+      const h = video ? video.videoHeight : 0;
+      // 1.1 容差：近方形的视频不当作横屏，避免按钮在边界上闪
+      const wide = w > 0 && h > 0 && w > h * 1.1;
+      const show = !!video && single && wide &&
+        index === this.activeIndex && this.landscapeIndex !== index;
+      btn.classList.toggle('dyf-show', show);
+    }
+
+    /**
+     * 进出横屏。横屏时媒体层旋转 90° 并换成「宽=屏高、高=屏宽」，
+     * 横向视频的 contain 长边因此变成屏幕高度，转过来才能铺满。
+     */
+    setLandscape(on, index) {
+      if (!this.root) return;
+      const at = typeof index === 'number' ? index : this.activeIndex;
+      if (on && at !== this.activeIndex) return;
+      if (on && this.currentMediaItem(at)?.type !== 'video') return;
+      // 旋转后旧位移基准失效，进出都先复位缩放
+      this.resetZoom(this.activeIndex);
+      this.finishSnap();
+
+      for (const slide of this.slides) {
+        if (slide) slide.classList.remove('is-landscape');
+      }
+      this.root.classList.toggle('dyf-landscape', !!on);
+      this.landscapeIndex = on ? at : -1;
+      const slide = on ? this.slides[at] : null;
+      if (slide) {
+        slide.classList.add('is-landscape');
+        this.scroller.scrollTop = slide.offsetTop;
+      }
+      // 横屏时入口按钮被隐藏，退出靠顶部退出条或 Esc
+      this.updateLandscapeBtn(at);
     }
 
     /** 底部进度条：显示已播时长与总时长，点击可跳转 */
@@ -1615,7 +1736,7 @@
 
       const isInteractive = target =>
         !!(target.closest && target.closest(
-          '.dyf-actions, .dyf-progress, .dyf-embed-link, .dyf-title, .dyf-excerpt-toggle'));
+          '.dyf-actions, .dyf-progress, .dyf-embed-link, .dyf-title, .dyf-excerpt-toggle, .dyf-landscape-btn'));
 
       // 文字卡内部需要原生滚动，手势不接管；展开后的摘要同理
       const inTextbox = target =>
@@ -1673,23 +1794,25 @@
       };
 
       /** 双指缩放上限沿用双击口径：低分辨率小图放大到原生尺寸即可 */
-      const pinchMaxScale = img => {
-        const shownW = img.clientWidth || window.innerWidth;
-        const natural = img.naturalWidth || shownW;
+      const pinchMaxScale = el => {
+        const shownW = el.clientWidth || window.innerWidth;
+        const natural = el.naturalWidth || el.videoWidth || shownW;
         return Math.max(2, natural / shownW);
       };
 
       /**
        * 进入双指缩放。正在翻页/切图时先回弹再接管，
        * 否则拖到一半改道会让画面停在两屏中间或半张图上。
-       * 返回 false 表示本次双指不能缩放（非图片帖），调用方须阻止单指逻辑。
+       * 返回 false 表示本次双指不能缩放（文字帖或站外视频），调用方须阻止单指逻辑。
        */
       const startPinch = () => {
         if (touchPoints.size < 2) return false;
+        // 横屏态的媒体层已被旋转，锚点公式不成立，直接不接管
+        if (this.landscapeIndex >= 0) return false;
         const index = indexOf();
-        if (this.currentMediaItem(index)?.type !== 'image') return false;
-        const slideEl = this.slides[index];
-        const img = slideEl && slideEl.querySelector('.dyf-single-image');
+        const kind = this.currentMediaItem(index)?.type;
+        if (kind !== 'image' && kind !== 'video') return false;
+        const img = this.zoomTarget(index);
         if (!img) return false;
         if (dragging) cancelGesture();
 
@@ -1720,8 +1843,7 @@
       /** 双指位移；锚点下的图像点保持不动，两指同时移动即双指平移 */
       const movePinch = () => {
         const index = indexOf();
-        const slideEl = this.slides[index];
-        const img = slideEl && slideEl.querySelector('.dyf-single-image');
+        const img = this.zoomTarget(index);
         if (!pinch || !img || touchPoints.size < 2) return;
         const [a, b] = [...touchPoints.values()];
         const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
@@ -1750,8 +1872,7 @@
         activePointerId = null;
         this.gestureActive = false;
         const index = indexOf();
-        const slideEl = this.slides[index];
-        const img = slideEl && slideEl.querySelector('.dyf-single-image');
+        const img = this.zoomTarget(index);
         const z = this.zoomState;
         if (!img || !z || z.index !== index) return;
         // 1 倍附近直接复位：留着 1.0x~1.05x 的缩放态会让单指拖动变成平移，
@@ -1804,8 +1925,10 @@
           touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
         }
         if (pinch) { movePinch(); return; }
-        // 两指以上且未进入缩放（非图片帖）：一律不参与翻页/切图
+        // 两指以上且未进入缩放（文字帖等）：一律不参与翻页/切图
         if (touchPoints.size >= 2) return;
+        // 横屏态只保留点击（暂停/继续），拖动不参与翻页与平移
+        if (this.landscapeIndex >= 0) return;
         if (!dragging || event.pointerId !== activePointerId) return;
         const now = event.timeStamp || Date.now();
         const dt = Math.max(1, now - lastMoveAt);
@@ -2163,7 +2286,18 @@
       }
     }
 
-    // ---- 图片缩放 ----
+    // ---- 图片 / 视频缩放 ----
+
+    /** 当前条目可缩放的元素：图片帖为 img，视频帖为 video */
+    zoomTarget(index) {
+      const slide = this.slides[index];
+      if (!slide) return null;
+      const item = this.currentMediaItem(index);
+      if (!item) return null;
+      if (item.type === 'video') return slide.querySelector('.dyf-video');
+      if (item.type === 'image') return slide.querySelector('.dyf-single-image');
+      return null;
+    }
 
     zoomActive(index) {
       const z = this.zoomState;
@@ -2198,30 +2332,28 @@
      * 放大后宽度对齐屏幕即可按原始像素看清内容；图片本身已满宽时
      * 退回固定 2 倍继续放大，倍数封顶 4，避免小图放得过大。
      */
-    fitZoomScale(img) {
+    fitZoomScale(el) {
       const screenW = window.innerWidth;
-      const shownW = img.clientWidth || screenW;
+      const shownW = el.clientWidth || screenW;
       let scale = screenW / shownW;
       if (scale <= 1.05) scale = 2;
-      // 上限由图片原生分辨率决定：高分辨率长图（手机截图拼接、条漫）按比例
-      // 需要 4 倍以上才能撑满屏宽，固定封顶 4 会让极限长图撑不满；
-      // 下限 2 保持既有行为（未满宽的图至少放大到 2 倍），低分辨率小图
-      // 最多放大到原生分辨率，超过只会发糊
-      const natural = img.naturalWidth || shownW;
+      // 上限由原生分辨率决定（图片用 naturalWidth，视频用 videoWidth）：
+      // 高分辨率长图按比例需要 4 倍以上才能撑满屏宽，固定封顶 4 会让极限长图撑不满；
+      // 下限 2 保持既有行为，低分辨率内容最多放大到原生尺寸，超过只会发糊
+      const natural = el.naturalWidth || el.videoWidth || shownW;
       return Math.min(Math.max(scale, 2), Math.max(2, natural / shownW));
     }
 
-    /** 放大状态下拖动平移图片，边界内钳制 */
+    /** 放大状态下拖动平移，边界内钳制（图片与视频共用） */
     panZoom(index, dx, dy) {
       const z = this.zoomState;
       if (!z || z.index !== index) return;
-      const slide = this.slides[index];
-      const img = slide && slide.querySelector('.dyf-single-image');
-      if (!img) return;
+      const el = this.zoomTarget(index);
+      if (!el) return;
       z.x = dx;
       z.y = dy;
-      this.clampZoom(img);
-      img.style.transform =
+      this.clampZoom(el);
+      el.style.transform =
         'scale(' + z.scale + ') translate(' + z.x / z.scale + 'px,' + z.y / z.scale + 'px)';
     }
 
@@ -2240,23 +2372,21 @@
     endPanZoom(index) {
       const z = this.zoomState;
       if (!z || z.index !== index) return;
-      const slide = this.slides[index];
-      const img = slide && slide.querySelector('.dyf-single-image');
-      if (!img) return;
-      img.classList.add('dyf-anim');
-      this.clampZoom(img);
-      img.style.transform =
+      const el = this.zoomTarget(index);
+      if (!el) return;
+      el.classList.add('dyf-anim');
+      this.clampZoom(el);
+      el.style.transform =
         'scale(' + z.scale + ') translate(' + z.x / z.scale + 'px,' + z.y / z.scale + 'px)';
-      setTimeout(() => img.classList.remove('dyf-anim'), 240);
+      setTimeout(() => el.classList.remove('dyf-anim'), 240);
     }
 
     /** 切换条目或切图时复位缩放 */
     resetZoom(index) {
       if (!this.zoomState || this.zoomState.index !== index) return;
       this.zoomState = null;
-      const slide = this.slides[index];
-      const img = slide && slide.querySelector('.dyf-single-image');
-      if (img) img.style.transform = '';
+      const el = this.zoomTarget(index);
+      if (el) el.style.transform = '';
     }
 
     /** 暂停时在画面中央显示暂停图标 */
@@ -2453,6 +2583,12 @@
       const syncProgress = () => this.updateProgress(video);
       video.addEventListener('timeupdate', syncProgress);
       video.addEventListener('loadedmetadata', syncProgress);
+      video.addEventListener('loadedmetadata', () => {
+        const slide = video.closest('.dyf-slide');
+        if (!slide) return;
+        const index = Number(slide.dataset.index);
+        if (this.videos.get(index) === video) this.updateLandscapeBtn(index);
+      });
       video.addEventListener('durationchange', syncProgress);
       video.addEventListener('seeked', syncProgress);
 
@@ -2760,6 +2896,8 @@
 
       const previous = this.activeIndex;
       this.activeIndex = index;
+      // 换条目必须退出横屏：旋转只对原条目有意义
+      if (this.landscapeIndex >= 0 && this.landscapeIndex !== index) this.setLandscape(false);
       // 换条目必须复位上一条的图片缩放，否则回来时图片停在放大状态
       this.resetZoom(previous);
 
@@ -2781,6 +2919,8 @@
       this.syncActions();
       this.updateCounter();
       this.updateActiveClass();
+      this.updateLandscapeBtn(index);
+      if (previous !== index) this.updateLandscapeBtn(previous);
       this.saveProgress();
       this.updateJumpbar();
       this.maybeLoadMore();
@@ -2858,6 +2998,8 @@
 
     goTo(index) {
       const target = Math.max(0, Math.min(this.posts.length - 1, index));
+      // 横屏态下翻页先退出横屏，避免旋转跟着新条目误用
+      if (this.landscapeIndex >= 0 && target !== this.landscapeIndex) this.setLandscape(false);
       // 统一走吸附：键盘、滚轮、播完自动下一条与手势共用同一套落位与激活逻辑
       this.snapTo(target);
     }
@@ -3213,8 +3355,7 @@
      */
     wheelZoom(deltaY, mx, my) {
       const index = this.activeIndex;
-      const slide = this.slides[index];
-      const img = slide && slide.querySelector('.dyf-single-image');
+      const img = this.zoomTarget(index);
       if (!img || !img.clientWidth) return;
 
       // 每格 ±15%；未放大时从 1x 起步
@@ -3230,7 +3371,6 @@
         this.resetZoom(index);
         return;
       }
-
       const cx = mx - window.innerWidth / 2;
       const cy = my - window.innerHeight / 2;
       const ratio = next / z.scale;
@@ -3324,6 +3464,8 @@
         case 'Escape':
           if (this.settingsOpen) this.togglePanel(false);
           else if (this.helpOpen) this.toggleHelp(false);
+          // 横屏态先退横屏，再按一次才退出浮层
+          else if (this.landscapeIndex >= 0) this.setLandscape(false);
           else this.close();
           break;
       }
@@ -3502,6 +3644,7 @@
         ['评论区翻页', '评论区打开时按空格，向下翻一屏'],
         ['点赞', '双击画面（图片帖双击为放大 / 缩小）'],
         ['图片缩放', '双指捏合连续缩放（移动端）；双击在适配尺寸与原生分辨率间切换；PC 上 Ctrl + 滚轮以光标为锚点缩放'],
+        ['视频缩放与横屏', '视频帖同样可双指捏合放大；横屏比例的单个视频右下角有横屏按钮，点后旋转铺满并隐藏控件，顶部按钮、Esc 或再点一次退出'],
         ['打开原帖', '点击左下角标题'],
         ['清屏', '右下角「清屏」按钮：隐藏全部控件只看内容，再点还原'],
         ['从头看 / 回到进度', '左上角计数器右侧的两个小图标：从头看回第 1 页最新并清掉阅读进度，另一个回到上次看到的最靠后位置'],
@@ -3730,6 +3873,20 @@
   function iconJumpToTop() {
     return '<svg viewBox="0 0 24 24"><line x1="5" y1="4" x2="19" y2="4"/>' +
       '<polyline points="6 14 12 8 18 14"/><line x1="12" y1="8" x2="12" y2="20"/></svg>';
+  }
+
+  /** 横屏：四角向外展开，与抖音横屏入口同语义 */
+  function iconLandscape() {
+    return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M14 4h6v6"/><path d="M10 20H4v-6"/>' +
+      '<path d="M20 4l-7 7"/><path d="M4 20l7-7"/></svg>';
+  }
+
+  /** 退出横屏：四角向内收拢 */
+  function iconLandscapeExit() {
+    return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M20 10h-6V4"/><path d="M4 14h6v6"/>' +
+      '<path d="M14 10l6-6"/><path d="M10 14l-6 6"/></svg>';
   }
 
   /** 清屏：对角角标向中心收拢（收起全部控件），样式同抖音清屏 */
