@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.26.0
+// @version      1.26.1
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.26.0';
+  const VERSION = '1.26.1';
 
   const CONFIG = {
     sel: {
@@ -580,23 +580,31 @@
   color:rgba(255,255,255,.55);font-size:12.5px;cursor:pointer;pointer-events:auto;}
 .dyf-excerpt-toggle:hover{color:rgba(255,255,255,.85)}
 
+/* 刻意不写 z-index：一旦设了 z-index，这个容器会形成独立层叠上下文，
+   内部按钮的 mix-blend-mode 就只能与空容器自己混合，反色失效。
+   不设置时靠 DOM 顺序（在 scroller 之后）自然盖在媒体之上。 */
 .dyf-actions{position:absolute;right:12px;bottom:110px;display:flex;flex-direction:column;
-  gap:16px;align-items:center;z-index:2;}
-.dyf-act{background:rgba(255,255,255,.1);border:0;color:#fff;width:46px;height:46px;
+  gap:16px;align-items:center;}
+/* 按钮图标与文字用 difference 混合：白底自动变黑、深底自动变白，不采样画面亮度。
+   不能给填充底色或毛玻璃，否则参与混合后变成色块。 */
+.dyf-act{background:transparent;border:0;color:#fff;width:46px;height:46px;
   border-radius:50%;cursor:pointer;font-size:11px;line-height:1.1;display:flex;
   flex-direction:column;align-items:center;justify-content:center;gap:2px;
-  transition:background .15s,transform .15s;backdrop-filter:blur(4px);}
-.dyf-act:hover{background:rgba(255,255,255,.22)}
+  mix-blend-mode:difference;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));
+  transition:transform .15s;}
+.dyf-act:hover{transform:scale(1.06)}
 .dyf-act:active{transform:scale(.92)}
 /* 清屏模式：隐藏全部叠加控件只留媒体画面与清屏按钮；隐藏与恢复同速淡入淡出 */
 #dyf-root .dyf-counter,#dyf-root .dyf-hud,#dyf-root .dyf-progress,#dyf-root .dyf-time,
-#dyf-root .dyf-caption,#dyf-root .dyf-actions .dyf-act,#dyf-root .dyf-actions .dyf-speed-group{transition:opacity .2s;}
+#dyf-root .dyf-caption,#dyf-root .dyf-actions .dyf-act,#dyf-root .dyf-actions .dyf-speed-group{transition:opacity .2s,transform .15s;}
 #dyf-root.dyf-clean .dyf-counter,#dyf-root.dyf-clean .dyf-hud,#dyf-root.dyf-clean .dyf-progress,
 #dyf-root.dyf-clean .dyf-time,#dyf-root.dyf-clean .dyf-caption,
 #dyf-root.dyf-clean .dyf-actions .dyf-act:not([data-act="clean"]),
 #dyf-root.dyf-clean .dyf-actions .dyf-speed-group{opacity:0;pointer-events:none;}
-.dyf-act.is-on{color:#ffd23f}
-.dyf-act.is-local{border:1px dashed rgba(255,255,255,.38);}
+/* 点亮状态退出混合：深色实心底 + 强调色，白底与深底都能看清 */
+.dyf-act.is-on{mix-blend-mode:normal;color:#ffd23f;background:rgba(0,0,0,.6);
+  box-shadow:0 0 0 1px rgba(255,255,255,.18);}
+.dyf-act.is-local{border:1px dashed rgba(255,255,255,.55);}
 
 .dyf-heart{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) scale(.4);
   font-size:110px;line-height:1;color:#fe2c55;opacity:0;pointer-events:none;z-index:3;
