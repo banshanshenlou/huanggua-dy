@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.28.1
+// @version      1.28.2
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -37,6 +37,11 @@
  *
  * 4. 未登录时不调用站点的点赞/收藏接口，只做本地标记。站点接口要求登录，
  *    直接调用会跳转到注册页，打断浏览。
+ *
+ * 5. 图标全部内联 SVG，不加载任何图标库（受 @grant none 与离线可用约束）。
+ *    其中横屏入口 tablet-smartphone、退出横屏 minimize、暂停叠加 play
+ *    取自 lucide（ISC），其余为本项目自绘；形状不要自己拼几何体，
+ *    优先复制成熟库的 path，保证线宽与圆角语言一致。
  */
 
 (function () {
@@ -47,7 +52,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.28.1';
+  const VERSION = '1.28.2';
 
   const CONFIG = {
     sel: {
@@ -3852,18 +3857,25 @@
       '<polyline points="6 14 12 8 18 14"/><line x1="12" y1="8" x2="12" y2="20"/></svg>';
   }
 
-  /** 横屏：竖屏手机与横放平板交叠，与抖音横屏入口同语义 */
+  /**
+   * 横屏入口：竖屏手机与横放平板交叠。
+   * 取自 lucide `tablet-smartphone`（ISC），不自行拼几何体：
+   * 自己画的矩形叠矩形既不像设备，也与其他图标不同线宽语言。
+   */
   function iconLandscape() {
-    return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
-      '<rect x="2.5" y="3.5" width="7.5" height="13" rx="2"/>' +
-      '<rect x="8" y="8.5" width="13.5" height="9" rx="2"/></svg>';
+    return '<svg viewBox="0 0 24 24">' +
+      '<rect width="10" height="14" x="3" y="8" rx="2"/>' +
+      '<path d="M5 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-2.4"/>' +
+      '<path d="M8 18h.01"/></svg>';
   }
 
-  /** 退出横屏：四角向内收拢 */
+  /** 退出横屏：取自 lucide `minimize`（ISC） */
   function iconLandscapeExit() {
-    return '<svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M20 10h-6V4"/><path d="M4 14h6v6"/>' +
-      '<path d="M14 10l6-6"/><path d="M10 14l-6 6"/></svg>';
+    return '<svg viewBox="0 0 24 24">' +
+      '<path d="M8 3v3a2 2 0 0 1-2 2H3"/>' +
+      '<path d="M21 8h-3a2 2 0 0 1-2-2V3"/>' +
+      '<path d="M3 16h3a2 2 0 0 1 2 2v3"/>' +
+      '<path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>';
   }
 
   /** 清屏：对角角标向中心收拢（收起全部控件），样式同抖音清屏 */
@@ -3890,9 +3902,12 @@
       '<line x1="12" y1="16.4" x2="12" y2="16.5"/></svg>';
   }
 
-  /** 暂停时中央叠加的是「点击后会发生什么」：显示播放三角，与抖音一致 */
+  /**
+   * 暂停时中央叠加：取自 lucide `play`（ISC）。
+   * CSS 里 `.dyf-pause-icon svg{fill:#fff}` 会把它填成实心，无需描边三角。
+   */
   function iconPause() {
-    return '<svg viewBox="0 0 24 24"><path d="M8 4.6v14.8L20 12z"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>';
   }
 
   function iconSpeed() {
