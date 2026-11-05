@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.29.1
+// @version      1.30.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -53,7 +53,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.29.1';
+  const VERSION = '1.30.0';
 
   const CONFIG = {
     sel: {
@@ -933,7 +933,7 @@
       // 待跨页恢复的目标必须先取：下面 setActive 会写入新位置，
       // 取晚了读到的就是当前条目，永远匹配不到目标
       this.markEntry = null;
-      const savedPostId = this.pendingRestorePostId();
+      const restoreSlot = this.pendingRestoreSlot();
       // 先让浮层可见再定位：display:none 时 offsetTop 恒为 0，滚动会失效
       this.restoreProgress();
       this.openBaselineIndex = this.activeIndex;
@@ -943,9 +943,18 @@
       const activeSlide = this.slides[this.activeIndex];
       if (activeSlide) this.scroller.scrollTop = activeSlide.offsetTop;
       this.maybeLoadMore();
-      // 进度条目可能属于上次运行期追加的远程分页，本地首屏匹配不到时
-      // 逐页拉取直到找到，避免刷新或重开后从头开始
-      if (savedPostId && this.source.hasMore) void this.restoreAcrossPages(savedPostId);
+      // 上次位置不在本地首屏：从第 1 页进入才值得逐页拉（用户从头刷）；
+      // 用户已经手动翻到后面某一页再进入，强行拉回旧位置的代价是���十次请求，
+      // 行为也不符合他的意图，这里只提示不加载。
+      if (restoreSlot && this.source.hasMore) {
+        if (this.source.page > 1) {
+          // 延后一点：开屏 500ms 后有“点击画面开启声音”的提示，同时弹会被它盖掉
+          const page = this.source.page;
+          setTimeout(() => this.toast('当前第 ' + page + ' 页，未自动恢复上次位置'), 1300);
+        } else {
+          void this.restoreAcrossPages(restoreSlot);
+        }
+      }
       // 默认静音是自动播放的前提，用户需要知道怎样开启声音
       if (settings.muted) setTimeout(() => this.toast('点击画面开启声音'), 500);
       return true;
@@ -3100,17 +3109,20 @@
      * 记录阅读位置。last 每次切换都更新（进入浮层用它恢复）；
      * farthest 只在向前推进时更新：记录点已加载且当前更靠后才覆盖。
      * 未加载说明进度在更后面，一律不动——这是回翻顶部不丢进度的关键。
+     * 同时记下所在列表页码：列表只能往后翻，知道目标在第几页才能判断
+     * “该往后拉几页”还是“目标本来就在前面、不该拉”。
      */
     saveProgress() {
       const post = this.posts[this.activeIndex];
       if (!post) return;
       const entry = this.marks();
       const now = Date.now();
-      entry.last = { postId: post.id, at: now };
+      const page = this.source.pageOf(this.activeIndex);
+      entry.last = { postId: post.id, at: now, page };
       const far = entry.farthest;
       const farIndex = far && far.postId ? this.posts.findIndex(item => item.id === far.postId) : -1;
       if (!far || (farIndex >= 0 && this.activeIndex > farIndex)) {
-        entry.farthest = { postId: post.id, at: now };
+        entry.farthest = { postId: post.id, at: now, page };
       }
       writeMarks(this.source.sort, this.source.tag, entry);
     }
@@ -3129,27 +3141,39 @@
       if (slide) this.scroller.scrollTop = slide.offsetTop;
     }
 
-    /** 需要跨页恢复的目标帖子：last 优先，其次 farthest，都在本地则返回 null */
-    pendingRestorePostId() {
+    /** 需要跨页恢复的目标（含记录时的页码）：last 优先，其次 farthest，本地已有则返回 null */
+    pendingRestoreSlot() {
       const entry = this.marks();
       for (const slot of [entry.last, entry.farthest]) {
-        if (slot && slot.postId && !this.posts.some(post => post.id === slot.postId)) return slot.postId;
+        if (slot && slot.postId && !this.posts.some(post => post.id === slot.postId)) return slot;
       }
       return null;
     }
 
     /**
-     * 跨页恢复进度：目标条目不在已加载条目里时逐页拉取列表直到找到，
-     * 找到后直接定位。上限 50 页，防止进度数据异常时无限请求；
-     * 拉取期间浮层照常可用，定位时会打断当前浏览位置。
+     * 跨页恢复进度：目标条目不在已加载条目里时逐页拉取列表直到找到。
+     *
+     * 列表只能往后翻，所以必须先用记录时的页码判定方向：
+     * - 目标在前面的页：拉多少页也没用，直接不拉；
+     * - 目标在后面：按页码差算需要的页数，而不是无脑拉满 50 页；
+     * - 旧数据没有页码：保守给 10 页（旧逻辑的 50 页会一路拉到 800+ 条）。
      */
-    async restoreAcrossPages(postId) {
+    async restoreAcrossPages(slot) {
+      const postId = slot && slot.postId;
       if (this.restoringPages || !postId) return;
+      const startPage = this.source.page;
+      const targetPage = Number(slot.page) || 0;
+      if (targetPage && targetPage < startPage) {
+        this.toast('上次浏览位置在第 ' + targetPage + ' 页，比当前页靠前，未自动恢复');
+        return;
+      }
+      const limit = targetPage
+        ? Math.min(50, targetPage - startPage + 2)
+        : 10;
       this.restoringPages = true;
       this.toast('正在恢复上次浏览位置…');
       try {
-        // 上限 50 页：进度在数百条开外时 20 页（约 400 条）不足以覆盖
-        for (let page = 0; page < 50 && this.opened && this.source.hasMore; page++) {
+        for (let page = 0; page < limit && this.opened && this.source.hasMore; page++) {
           const added = await this.source.fetchNext();
           if (!added.length) break;
           const total = this.posts.length;
