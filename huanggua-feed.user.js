@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.25.1
+// @version      1.26.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.25.1';
+  const VERSION = '1.26.0';
 
   const CONFIG = {
     sel: {
@@ -928,6 +928,9 @@
       // 清屏为会话内状态，退出浮层即复位，下次进入从完整控件开始
       this.cleanScreenOn = false;
       this.helpEl = null;
+      // 操作栏节点随 root 一起销毁，旧引用必须清掉，否则重开后会操作已移除的节点
+      this.actEls = null;
+      this.actionsEl = null;
 
       removeStyle();
       document.documentElement.classList.remove('dyf-locked');
@@ -1096,6 +1099,10 @@
       const comments = this.buildCommentPanel();
       root.appendChild(comments.wrap);
 
+      // 右侧操作栏固定在视口：挂在 root 而不是 slide 上，跟内容滚动的旧行为已取消
+      this.actionsEl = this.buildActions();
+      root.appendChild(this.actionsEl);
+
       // 浮层挂在 documentElement 上：body 若有 transform/filter 会破坏 fixed 定位，
       // 部分移动端模板确实会加这类样式
       document.documentElement.appendChild(root);
@@ -1209,7 +1216,6 @@
       }
 
       slide.appendChild(caption);
-      slide.appendChild(this.buildActions(index, post));
       if (this.currentMediaItem(index)?.type === 'video') this.buildProgress(slide);
       // 媒体位置不再用独立角标显示，统一合并进左上角内容计数器（updateCounter）
     }
@@ -1428,72 +1434,88 @@
       }
     }
 
-    buildActions(index, post) {
+    /**
+     * 右侧操作栏：只建一份，挂在浮层根节点上固定在视口右侧。
+     * 早期实现每条 slide 各建一份，翻页与拖动时整列按钮会跟着内容上下滑走。
+     * 按钮内容（点赞数、收藏态、评论数）由 syncActions 在切换条目时刷新。
+     */
+    buildActions() {
       const actions = el('div', 'dyf-actions');
-
-      // 原页面卡片上已有站点的点赞状态与计数，优先用真实值初始化
-      const pageLikeBtn = document.querySelector(
-        '.post-card[data-id="' + post.id + '"] .vote-btn.upvote');
-      const pageLiked = pageLikeBtn ? pageLikeBtn.classList.contains('voted') : false;
-      const pageCount = pageLikeBtn && pageLikeBtn.querySelector('.vote-count')
-        ? pageLikeBtn.querySelector('.vote-count').textContent.trim() : '';
-      if (pageLiked) likedIds.add(post.id);
-      const liked = likedIds.has(post.id);
 
       const like = el('button', 'dyf-act');
       like.dataset.act = 'like';
-      like.innerHTML = iconHeart() + '<span>' + (pageCount || post.likes || '') + '</span>';
-      if (liked) like.classList.add('is-on');
-      if (!isLoggedIn()) {
-        like.classList.add('is-local');
-        like.title = '未登录，仅本地记录';
-      }
-      like.addEventListener('click', () => this.onLike(index, like));
+      like.innerHTML = iconHeart() + '<span></span>';
+      like.addEventListener('click', () => this.onLike(this.activeIndex, like));
       actions.appendChild(like);
 
       const fav = el('button', 'dyf-act');
       fav.dataset.act = 'fav';
       fav.innerHTML = iconStar() + '<span>收藏</span>';
-      if (favIds.has(post.id)) fav.classList.add('is-on');
-      if (!isLoggedIn()) {
-        fav.classList.add('is-local');
-        fav.title = '未登录，仅本地记录';
-      }
-      fav.addEventListener('click', () => this.onFav(index, fav));
+      fav.addEventListener('click', () => this.onFav(this.activeIndex, fav));
       actions.appendChild(fav);
 
       const commentBtn = el('button', 'dyf-act');
       commentBtn.dataset.act = 'comment';
-      commentBtn.innerHTML = iconComment() + '<span>' + (post.comments || 0) + '</span>';
-      commentBtn.addEventListener('click', () => this.openComments(post));
+      commentBtn.innerHTML = iconComment() + '<span>0</span>';
+      commentBtn.addEventListener('click', () => this.openComments(this.posts[this.activeIndex]));
       actions.appendChild(commentBtn);
 
       const saveBtn = el('button', 'dyf-act');
       saveBtn.dataset.act = 'save';
       saveBtn.innerHTML = iconDownload() + '<span>保存</span>';
-      saveBtn.addEventListener('click', () => this.saveCurrent(index));
+      saveBtn.addEventListener('click', () => this.saveCurrent(this.activeIndex));
       actions.appendChild(saveBtn);
 
       const nextBtn = el('button', 'dyf-act');
       nextBtn.dataset.act = 'autonext';
-      nextBtn.innerHTML = iconNext() + '<span>' + (settings.autoNext ? '连播' : '单条') + '</span>';
-      nextBtn.classList.toggle('is-on', !!settings.autoNext);
+      nextBtn.innerHTML = iconNext() + '<span>连播</span>';
       nextBtn.addEventListener('click', () => this.toggleAutoNext());
       actions.appendChild(nextBtn);
 
       actions.appendChild(this.buildSpeedGroup());
 
-      // 清屏：抖音式一键隐藏全部控件，再点还原。翻页重建按钮时按实例状态回显；
-      // 不用 is-on 高亮，清屏后唯一亮着的按钮会破坏沉浸感
+      // 清屏：抖音式一键隐藏全部控件，再点还原
       const cleanBtn = el('button', 'dyf-act');
       cleanBtn.dataset.act = 'clean';
-      cleanBtn.innerHTML = (this.cleanScreenOn ? iconRestore() : iconClean()) +
-        '<span>' + (this.cleanScreenOn ? '还原' : '清屏') + '</span>';
+      cleanBtn.innerHTML = iconClean() + '<span>清屏</span>';
       cleanBtn.title = '清屏：只看内容，再点还原';
       cleanBtn.addEventListener('click', () => this.toggleCleanScreen(cleanBtn));
       actions.appendChild(cleanBtn);
 
+      this.actEls = { like, fav, comment: commentBtn, save: saveBtn, autonext: nextBtn, clean: cleanBtn };
       return actions;
+    }
+
+    /** 按当前条目刷新操作栏：点赞数与状态、收藏态、评论数、连播文案 */
+    syncActions() {
+      const els = this.actEls;
+      const post = this.posts[this.activeIndex];
+      if (!els || !post) return;
+
+      // 原页面卡片上已有站点的点赞状态与计数，优先用真实值
+      const pageLikeBtn = document.querySelector(
+        '.post-card[data-id="' + post.id + '"] .vote-btn.upvote');
+      if (pageLikeBtn && pageLikeBtn.classList.contains('voted')) likedIds.add(post.id);
+      const pageCount = pageLikeBtn && pageLikeBtn.querySelector('.vote-count')
+        ? pageLikeBtn.querySelector('.vote-count').textContent.trim() : '';
+      const count = els.like.querySelector('span');
+      if (count) count.textContent = pageCount || post.likes || '';
+
+      const loggedIn = isLoggedIn();
+      els.like.classList.toggle('is-on', likedIds.has(post.id));
+      els.like.classList.toggle('is-local', !loggedIn);
+      els.like.title = loggedIn ? '点赞' : '未登录，仅本地记录';
+
+      els.fav.classList.toggle('is-on', favIds.has(post.id));
+      els.fav.classList.toggle('is-local', !loggedIn);
+      els.fav.title = loggedIn ? '收藏' : '未登录，仅本地记录';
+
+      const commentCount = els.comment.querySelector('span');
+      if (commentCount) commentCount.textContent = String(post.comments || 0);
+
+      els.autonext.classList.toggle('is-on', !!settings.autoNext);
+      const nextLabel = els.autonext.querySelector('span');
+      if (nextLabel) nextLabel.textContent = settings.autoNext ? '连播' : '单条';
     }
 
     /** 清屏模式：隐藏全部叠加控件只留画面；状态跟实例走，翻页不退出 */
@@ -2112,7 +2134,7 @@
       this.showHeart(slide);
       // 双击只点赞，不取消
       if (likedIds.has(post.id)) return;
-      this.onLike(index, slide.querySelector('[data-act="like"]'));
+      this.onLike(index, this.actEls && this.actEls.like);
     }
 
     showHeart(slide) {
@@ -2596,6 +2618,7 @@
 
       this.syncVideos();
       this.playCurrent();
+      this.syncActions();
       this.updateCounter();
       this.updateActiveClass();
       this.saveProgress();
@@ -2874,13 +2897,12 @@
           this.setLikeCount(post.id, String(data.upvotes));
         } else {
           saveFav();
-          if (this.root) this.root.querySelectorAll('.dyf-slide').forEach(slide => {
-            if (slide.dataset.postId !== post.id) return;
-            const fav = slide.querySelector('[data-act="fav"]');
-            fav?.classList.toggle('is-on', on);
-            const label = fav?.querySelector('span');
+          const active = this.posts[this.activeIndex];
+          if (this.actEls && active && active.id === post.id) {
+            this.actEls.fav.classList.toggle('is-on', on);
+            const label = this.actEls.fav.querySelector('span');
             if (label) label.textContent = on ? '已收藏' : '收藏';
-          });
+          }
         }
         const card = document.querySelector(CONFIG.sel.card + '[data-id="' + post.id + '"]');
         const pageButton = card?.querySelector(like ? CONFIG.sel.pageLike : CONFIG.sel.pageBookmark);
@@ -2899,20 +2921,17 @@
       }
     }
 
+    /** 操作栏只有一份且只代表当前条目，其它帖子的状态由 syncActions 在切换时重建 */
     syncLikeButton(postId) {
-      if (!this.root) return;
-      const on = likedIds.has(postId);
-      this.root.querySelectorAll('.dyf-slide').forEach(slide => {
-        if (slide.dataset.postId !== postId) return;
-        const btn = slide.querySelector('[data-act="like"]');
-        if (btn) btn.classList.toggle('is-on', on);
-      });
+      const post = this.posts[this.activeIndex];
+      if (!this.actEls || !post || post.id !== postId) return;
+      this.actEls.like.classList.toggle('is-on', likedIds.has(postId));
     }
 
     setLikeCount(postId, count) {
-      if (!this.root || !count) return;
-      const slide = this.root.querySelector('.dyf-slide[data-post-id="' + postId + '"]');
-      const span = slide ? slide.querySelector('[data-act="like"] span') : null;
+      const post = this.posts[this.activeIndex];
+      if (!this.actEls || !post || post.id !== postId || !count) return;
+      const span = this.actEls.like.querySelector('span');
       if (span) span.textContent = count;
     }
 
