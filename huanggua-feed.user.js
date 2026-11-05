@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.30.0
+// @version      1.31.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -53,7 +53,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.30.0';
+  const VERSION = '1.31.0';
 
   const CONFIG = {
     sel: {
@@ -613,6 +613,10 @@
    前提：本元素与 .dyf-actions 都不能创建层叠上下文，否则混合看不到画面。 */
 .dyf-actions{position:absolute;right:12px;bottom:110px;display:flex;flex-direction:column;
   gap:16px;align-items:center;}
+/* 倾斜换边：哪侧低就把整列按钮放到哪侧（设置开启、传感器有数据时） */
+#dyf-root.dyf-actions-left .dyf-actions{right:auto;left:12px;}
+/* 底部文案的右侧内边距是为右列按钮留的，按钮换到左侧后要镜像，否则文字被盖 */
+#dyf-root.dyf-actions-left .dyf-caption{padding:64px 22px 26px 92px;}
 .dyf-act{position:relative;background:transparent;border:0;color:#fff;width:46px;height:46px;
   border-radius:50%;cursor:pointer;font-size:11px;line-height:1.1;display:flex;
   flex-direction:column;align-items:center;justify-content:center;gap:2px;
@@ -873,6 +877,10 @@
       this.markEntry = null;
       // 处于横屏态的条目索引，-1 表示不在横屏
       this.landscapeIndex = -1;
+      // 倾斜换边：当前操作栏在哪侧、监听函数、上次判定时间（节流用）
+      this.actionSide = 'right';
+      this.orientationHandler = null;
+      this.sideCheckAt = 0;
       // 已并行预载过的图片地址：窗口回收只清节点，缓存命中靠它去重
       this.warmedImages = new Set();
 
@@ -957,6 +965,8 @@
       }
       // 默认静音是自动播放的前提，用户需要知道怎样开启声音
       if (settings.muted) setTimeout(() => this.toast('点击画面开启声音'), 500);
+      // 倾斜换边：设置开启时挂监听（权限已在设置里拿过，拿不到则保持右侧）
+      if (settings.gravitySide) void this.enableGravitySide(false);
       return true;
     }
 
@@ -1004,6 +1014,9 @@
       // 横屏态随实例销毁复位
       this.landscapeIndex = -1;
       this.landscapeBarEl = null;
+      // 倾斜换边：监听必须摘，否则下一个实例会收到两份事件
+      this.stopOrientationWatch();
+      this.actionSide = 'right';
 
       removeStyle();
       document.documentElement.classList.remove('dyf-locked');
@@ -1666,8 +1679,113 @@
       this.syncLandscapeBtn();
     }
 
-    /** 清屏模式：隐藏全部叠加控件只留画面；状态跟实例走，翻页不退出 */
-    toggleCleanScreen(btn) {
+    // ------------------------------------------------------------ 倾斜换边
+
+    /**
+     * 开关倾斜换边。
+     * 真正能分辨左右高差的是设备姿态（横滚角），不是 GPS 海拔：
+     * 浏览器拿到的 `coords.altitude` 精度到十米级，左右两端几厘米的高差测不出来。
+     * 默认关闭；开时才申请传感器权限，拒绝则回滚开关并保持右侧。
+     */
+    async toggleGravitySide(value, checkbox) {
+      if (!value) {
+        settings.gravitySide = false;
+        store.set('settings', settings);
+        this.stopOrientationWatch();
+        this.applyActionSide('right');
+        return;
+      }
+      const granted = await this.requestOrientationPermission();
+      if (!granted) {
+        // 拿不到权限就回滚，否则下次进入会静默失败且用户以为已开启
+        settings.gravitySide = false;
+        store.set('settings', settings);
+        if (checkbox) checkbox.checked = false;
+        this.stopOrientationWatch();
+        this.applyActionSide('right');
+        return;
+      }
+      settings.gravitySide = true;
+      store.set('settings', settings);
+      this.startOrientationWatch();
+      this.toast('倾斜换边已开启：哪侧低就把按钮放哪侧');
+    }
+
+    /** iOS 13+ 必须在用户手势里请求；拿不到权限时返回 false */
+    async requestOrientationPermission() {
+      const DOE = window.DeviceOrientationEvent;
+      if (typeof DOE !== 'function') {
+        this.toast('此浏览器不支持设备方向传感器');
+        return false;
+      }
+      if (typeof DOE.requestPermission !== 'function') return true;
+      try {
+        const state = await DOE.requestPermission();
+        if (state === 'granted') return true;
+        this.toast('未获得传感器权限，仍保持右侧');
+        return false;
+      } catch (e) {
+        this.toast('传感器权限请求失败，仍保持右侧');
+        return false;
+      }
+    }
+
+    /** 进入浮层时恢复（silent）：权限失败不弹提示，保持右侧 */
+    async enableGravitySide(silent) {
+      const granted = silent === false
+        ? await this.requestOrientationPermission()
+        : true;
+      if (!granted) {
+        this.applyActionSide('right');
+        return;
+      }
+      this.startOrientationWatch();
+    }
+
+    startOrientationWatch() {
+      if (this.orientationHandler || typeof window.DeviceOrientationEvent !== 'function') return;
+      this.orientationHandler = event => this.handleOrientation(event);
+      window.addEventListener('deviceorientation', this.orientationHandler, true);
+    }
+
+    stopOrientationWatch() {
+      if (!this.orientationHandler) return;
+      window.removeEventListener('deviceorientation', this.orientationHandler, true);
+      this.orientationHandler = null;
+    }
+
+    /**
+     * gamma 是绕屏幕前后轴的横滚角：正值 = 右侧下沉，负值 = 左侧下沉。
+     * 动作：20 Hz 快于需要，做 200ms 节流；接近平放（小于 8°）回退右侧；
+     * 横屏时 gamma 语义随设备旋转变化，直接回退右侧。
+     */
+    handleOrientation(event) {
+      if (!settings.gravitySide || !this.opened) return;
+      const gamma = event.gamma;
+      if (typeof gamma !== 'number' || !isFinite(gamma)) {
+        this.applyActionSide('right');
+        return;
+      }
+      if (window.innerWidth > window.innerHeight) {
+        this.applyActionSide('right');
+        return;
+      }
+      const now = Date.now();
+      if (now - this.sideCheckAt < 200) return;
+      this.sideCheckAt = now;
+      if (Math.abs(gamma) < 8) this.applyActionSide('right');
+      else this.applyActionSide(gamma > 0 ? 'right' : 'left');
+    }
+
+    /** 切换操作栏所在侧；同一侧不重复写 DOM */
+    applyActionSide(side) {
+      const next = side === 'left' ? 'left' : 'right';
+      if (this.actionSide === next) return;
+      this.actionSide = next;
+      if (this.root) this.root.classList.toggle('dyf-actions-left', next === 'left');
+    }
+
+    /** 清屏模式：隐藏全部叠加控件只留画面；状态跟实例走，翻页不退出 */    toggleCleanScreen(btn) {
       const on = this.root.classList.toggle('dyf-clean');
       this.cleanScreenOn = on;
       // 每条 slide 有自己的操作栏，全部按钮同步切换，避免翻页后状态不一致
@@ -3607,6 +3725,12 @@
         store.set('settings', settings);
       }));
 
+      let gravityRow;
+      gravityRow = this.checkboxRow('按手机倾斜自动换边（按钮放低的一侧）', settings.gravitySide, value => {
+        void this.toggleGravitySide(value, gravityRow.__checkbox);
+      });
+      box.appendChild(gravityRow);
+
       box.appendChild(this.fieldRow('屏蔽标签（逗号分隔，可带 #）', settings.blockTags, value => {
         settings.blockTags = value;
         store.set('settings', settings);
@@ -3656,6 +3780,8 @@
       input.addEventListener('change', () => onChange(input.checked));
       row.appendChild(text);
       row.appendChild(input);
+      // 供异步失败时回滚勾选状态（如传感器权限被拒绝）
+      row.__checkbox = input;
       return row;
     }
 
@@ -3695,6 +3821,7 @@
         ['点赞', '双击画面（图片帖双击为放大 / 缩小）'],
         ['图片缩放', '双指捏合连续缩放（移动端）；双击在适配尺寸与原生分辨率间切换；PC 上 Ctrl + 滚轮以光标为锚点缩放'],
         ['视频缩放与横屏', '视频帖同样可双指捏合放大；横屏比例的单个视频右下角有横屏按钮，点后旋转铺满并隐藏控件，顶部按钮、Esc 或再点一次退出'],
+        ['倾斜换边', '设置里开启后，右侧整列按钮会移到手机较低的一侧；接近平放或横屏时回右侧'],
         ['打开原帖', '点击左下角标题'],
         ['清屏', '右下角「清屏」按钮：隐藏全部控件只看内容，再点还原'],
         ['从头看 / 回到进度', '左上角计数器右侧的两个小图标：从头看回第 1 页最新并清掉阅读进度，另一个回到上次看到的最靠后位置'],
