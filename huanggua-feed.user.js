@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.29.0
+// @version      1.29.1
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -53,7 +53,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.29.0';
+  const VERSION = '1.29.1';
 
   const CONFIG = {
     sel: {
@@ -1667,8 +1667,9 @@
           '<span>' + (on ? '还原' : '清屏') + '</span>';
       });
       if (on) {
-        // 进入清屏先收掉放大与横滑残留，画面回到纯净基准
-        this.resetZoom(this.activeIndex);
+        // 只收掉未完成的吸附，不碰图片/视频缩放：
+        // 清屏的语义是“隐藏叠加控件”，不是重置内容。以前这里调了 resetZoom，
+        // 导致放大看长图时一点清屏就被打回原尺寸。
         this.finishSnap();
       }
     }
