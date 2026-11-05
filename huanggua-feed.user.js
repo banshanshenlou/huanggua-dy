@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.28.2
+// @version      1.28.3
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -39,9 +39,10 @@
  *    直接调用会跳转到注册页，打断浏览。
  *
  * 5. 图标全部内联 SVG，不加载任何图标库（受 @grant none 与离线可用约束）。
- *    其中横屏入口 tablet-smartphone、退出横屏 minimize、暂停叠加 play
- *    取自 lucide（ISC），其余为本项目自绘；形状不要自己拼几何体，
- *    优先复制成熟库的 path，保证线宽与圆角语言一致。
+ *    除下方列出的 4 个定制图，其余均复制 lucide（ISC）官方 path，
+ *    不凭记忆临摹：自拟形状在单个简单图形上勉强能看，一到复合图形就崩（如横屏）。
+ *    定制图：iconJumpToTop / iconJumpToBottom（回到顶部、跳向底部语义）
+ *           iconClean / iconRestore（抖音清屏角标）。
  */
 
 (function () {
@@ -52,7 +53,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.28.2';
+  const VERSION = '1.28.3';
 
   const CONFIG = {
     sel: {
@@ -3838,17 +3839,20 @@
 
   // ---------------------------------------------------------------- 图标
 
+  /** 点赞：取自 lucide `heart`（ISC） */
   function iconHeart() {
-    return '<svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/></svg>';
   }
 
+  /** 收藏：取自 lucide `star`（ISC） */
   function iconStar() {
-    return '<svg viewBox="0 0 24 24"><path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.9L12 17.8 5.8 21l1.2-6.9-5-4.9 6.9-1z"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>';
   }
 
+  /** 连播：取自 lucide `skip-forward`（ISC） */
   function iconNext() {
-    return '<svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/>' +
-      '<line x1="19" y1="5" x2="19" y2="19"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M21 4v16"/>' +
+      '<path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"/></svg>';
   }
 
   /** 从头看：回到顶部语义（顶部横杠 + 向上箭头） */
@@ -3896,10 +3900,11 @@
       '<polyline points="6 10 12 16 18 10"/><line x1="12" y1="4" x2="12" y2="16"/></svg>';
   }
 
+  /** 帮助：取自 lucide `circle-help`（ISC） */
   function iconHelp() {
-    return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/>' +
-      '<path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.7v.3"/>' +
-      '<line x1="12" y1="16.4" x2="12" y2="16.5"/></svg>';
+    return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/>' +
+      '<path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>' +
+      '<path d="M12 17h.01"/></svg>';
   }
 
   /**
@@ -3910,9 +3915,10 @@
     return '<svg viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>';
   }
 
+  /** 倍速：取自 lucide `gauge`（ISC） */
   function iconSpeed() {
-    return '<svg viewBox="0 0 24 24"><path d="M3.5 17a9 9 0 1 1 17 0"/>' +
-      '<line x1="12" y1="17" x2="16.5" y2="10.5"/><circle cx="12" cy="17" r="1.4"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="m12 14 4-4"/>' +
+      '<path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>';
   }
 
   /** 1 → 1x，1.5 → 1.5x */
@@ -3932,45 +3938,44 @@
     video.playbackRate = rate;
   }
 
+  /** 设置：取自 lucide `settings`（ISC） */
   function iconGear() {
-    return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/>' +
-      '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06' +
-      'a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09' +
-      'A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83' +
-      'l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09' +
-      'A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83' +
-      'l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09' +
-      'a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83' +
-      'l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4' +
-      'h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>' +
+      '<circle cx="12" cy="12" r="3"/></svg>';
   }
 
+  /** 退出：取自 lucide `x`（ISC） */
   function iconExit() {
-    return '<svg viewBox="0 0 24 24"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
   }
 
-  /** 窄屏 HUD 折叠按钮的左箭头，展开时通过 CSS 旋转 180° */
+  /** 窄屏 HUD 折叠箭头，展开时 CSS 旋转 180°；取自 lucide `chevron-left`（ISC） */
   function iconChevron() {
-    return '<svg viewBox="0 0 24 24"><polyline points="15 5 8 12 15 19"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>';
   }
 
+  /** 保存：取自 lucide `download`（ISC） */
   function iconDownload() {
-    return '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
-      '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M12 15V3"/>' +
+      '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
+      '<path d="m7 10 5 5 5-5"/></svg>';
   }
 
+  /** 评论：取自 lucide `message-circle`（ISC） */
   function iconComment() {
-    return '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.6-4.6A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/></svg>';
   }
 
+  /** 有声：取自 lucide `volume-2`（ISC） */
   function iconVolumeOn() {
-    return '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4z"/>' +
-      '<path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/>' +
+      '<path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg>';
   }
 
+  /** 静音：取自 lucide `volume-x`（ISC） */
   function iconVolumeOff() {
-    return '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4z"/>' +
-      '<line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+    return '<svg viewBox="0 0 24 24"><path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"/>' +
+      '<path d="m16.5 14.5 5-5"/><path d="m16.5 9.5 5 5"/></svg>';
   }
 
   /** 秒数格式化为 m:ss */
