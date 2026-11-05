@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.26.4
+// @version      1.27.0
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -47,7 +47,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.26.4';
+  const VERSION = '1.27.0';
 
   const CONFIG = {
     sel: {
@@ -1646,9 +1646,15 @@
       // 放大图平移基准：手势开始时的既有偏移，拖动在其上累加
       let panBaseX = 0;
       let panBaseY = 0;
-      // 多指触摸：只有第一根手指参与手势。第二指落下若也参与，
-      // 会在吸附动画进行中重置手势基准，表现为画面卡在两屏之间
+      // 多指触摸：只有第一根手指参与手势。第二指落下者若也参与，
+      // 会在吸附动画进行中重置手势基准，表现为画面卡在两屏之间；
+      // 但双指缩放需要两根手指，故单独记一张表，只在图片帖上开双指分支
       let activePointerId = null;
+      const touchPoints = new Map();
+      // 双指缩放会话：起手时的间距、倍率、位移与中点（相对视口中心）
+      let pinch = null;
+      // 本次手势曾进过双指：抬指后不得再走单击/双击判定
+      let pinched = false;
 
       const finishGesture = () => {
         dragging = false;
@@ -1656,15 +1662,124 @@
         this.gestureActive = false;
       };
 
+      /** 中断进行中的单指手势并按回弹处理（双指接管、浏览器接管时用） */
+      const cancelGesture = () => {
+        if (!dragging) return;
+        const movedAxis = axis;
+        finishGesture();
+        if (movedAxis === 'y') this.snapBack();
+        else if (movedAxis === 'x') this.cancelDragMedia(indexOf());
+        else if (movedAxis === 'pan') this.endPanZoom(indexOf());
+      };
+
+      /** 双指缩放上限沿用双击口径：低分辨率小图放大到原生尺寸即可 */
+      const pinchMaxScale = img => {
+        const shownW = img.clientWidth || window.innerWidth;
+        const natural = img.naturalWidth || shownW;
+        return Math.max(2, natural / shownW);
+      };
+
+      /**
+       * 进入双指缩放。正在翻页/切图时先回弹再接管，
+       * 否则拖到一半改道会让画面停在两屏中间或半张图上。
+       * 返回 false 表示本次双指不能缩放（非图片帖），调用方须阻止单指逻辑。
+       */
+      const startPinch = () => {
+        if (touchPoints.size < 2) return false;
+        const index = indexOf();
+        if (this.currentMediaItem(index)?.type !== 'image') return false;
+        const slideEl = this.slides[index];
+        const img = slideEl && slideEl.querySelector('.dyf-single-image');
+        if (!img) return false;
+        if (dragging) cancelGesture();
+
+        const [a, b] = [...touchPoints.values()];
+        const z = this.zoomState && this.zoomState.index === index ? this.zoomState : null;
+        pinch = {
+          startDist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+          startScale: z ? z.scale : 1,
+          startX: z ? z.x : 0,
+          startY: z ? z.y : 0,
+          // 图片在媒体区内居中，其布局中心即视口中心，
+          // 两指中点减视口中心就是锚点相对图片中心的偏移
+          cx: (a.x + b.x) / 2 - window.innerWidth / 2,
+          cy: (a.y + b.y) / 2 - window.innerHeight / 2
+        };
+        // 退出单指流程：否则抬指时会按拖动结算或触发点击
+        dragging = false;
+        axis = null;
+        activePointerId = null;
+        pinched = true;
+        this.finishSnap();
+        this.gestureActive = true;
+        this.gestureBase = index;
+        img.classList.remove('dyf-anim');
+        return true;
+      };
+
+      /** 双指位移；锚点下的图像点保持不动，两指同时移动即双指平移 */
+      const movePinch = () => {
+        const index = indexOf();
+        const slideEl = this.slides[index];
+        const img = slideEl && slideEl.querySelector('.dyf-single-image');
+        if (!pinch || !img || touchPoints.size < 2) return;
+        const [a, b] = [...touchPoints.values()];
+        const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+        const scale = Math.min(pinchMaxScale(img), Math.max(1, pinch.startScale * (dist / pinch.startDist)));
+        const cx = (a.x + b.x) / 2 - window.innerWidth / 2;
+        const cy = (a.y + b.y) / 2 - window.innerHeight / 2;
+        // 纸面推导：缩放前锚点下的图像点 p = (C0 - offset0) / s0；
+        // 缩放后要让 p 仍在中点下，即 offset1 = C1 - s1 * p
+        const ratio = scale / pinch.startScale;
+        this.zoomState = {
+          index,
+          scale,
+          x: cx - ratio * (pinch.cx - pinch.startX),
+          y: cy - ratio * (pinch.cy - pinch.startY)
+        };
+        this.clampZoom(img);
+        const z = this.zoomState;
+        img.style.transform =
+          'scale(' + z.scale + ') translate(' + z.x / z.scale + 'px,' + z.y / z.scale + 'px)';
+      };
+
+      /** 结束双指：缩回 1 倍直接复位，否则钳制边界并补一次过渡动画 */
+      const endPinch = () => {
+        if (!pinch) return;
+        pinch = null;
+        activePointerId = null;
+        this.gestureActive = false;
+        const index = indexOf();
+        const slideEl = this.slides[index];
+        const img = slideEl && slideEl.querySelector('.dyf-single-image');
+        const z = this.zoomState;
+        if (!img || !z || z.index !== index) return;
+        // 1 倍附近直接复位：留着 1.0x~1.05x 的缩放态会让单指拖动变成平移，
+        // 翻页反而失效，手感像卡住了
+        if (z.scale <= 1.05) {
+          this.resetZoom(index);
+          return;
+        }
+        this.endPanZoom(index);
+      };
+
       // 兜底拦截原生拖拽：图片拖影会中断指针事件流，让鼠标平移失效
       slide.addEventListener('dragstart', event => event.preventDefault());
 
       slide.addEventListener('pointerdown', event => {
+        if (event.pointerType !== 'mouse') touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        // 第二根手指落下：图片帖改走双指缩放；其余媒体也锁住单指流程，
+        // 否则双指会变成一次纵向拖动直接翻页
+        if (touchPoints.size === 2) {
+          if (!startPinch()) { cancelGesture(); pinched = true; }
+          return;
+        }
         if (activePointerId !== null) return;
         if (isInteractive(event.target) || inTextbox(event.target)) return;
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         // 新手势开始时立即结束未完成的吸附，避免两次动画互相叠加
         this.finishSnap();
+        pinched = false;
         activePointerId = event.pointerId;
         dragging = true;
         axis = null;
@@ -1685,6 +1800,12 @@
       });
 
       slide.addEventListener('pointermove', event => {
+        if (touchPoints.has(event.pointerId)) {
+          touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        }
+        if (pinch) { movePinch(); return; }
+        // 两指以上且未进入缩放（非图片帖）：一律不参与翻页/切图
+        if (touchPoints.size >= 2) return;
         if (!dragging || event.pointerId !== activePointerId) return;
         const now = event.timeStamp || Date.now();
         const dt = Math.max(1, now - lastMoveAt);
@@ -1747,12 +1868,17 @@
       };
 
       slide.addEventListener('pointerup', event => {
+        touchPoints.delete(event.pointerId);
+        // 双指期间任一指抬起即结束本次缩放，避免第二指残留
+        if (pinch) { endPinch(); return; }
         if (event.pointerId !== activePointerId) return;
         activePointerId = null;
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         if (endGesture(event)) return;
 
         if (isInteractive(event.target) || inTextbox(event.target)) return;
+        // 刚从双指收手：不再当成点击，否则会误触暂停或点赞
+        if (pinched) { pinched = false; return; }
 
         // 点击：双击点赞（图片帖为缩放），单击延迟执行
         const now = Date.now();
@@ -1779,6 +1905,8 @@
 
       // 浏览器接管手势（如边缘回弹）时不产生 pointerup，必须按回弹处理
       slide.addEventListener('pointercancel', event => {
+        touchPoints.delete(event.pointerId);
+        if (pinch) { endPinch(); return; }
         if (event.pointerId !== activePointerId) return;
         activePointerId = null;
         if (!dragging) return;
@@ -3373,6 +3501,7 @@
         ['打开评论区', 'x，或点击右侧评论按钮；再按一次关闭'],
         ['评论区翻页', '评论区打开时按空格，向下翻一屏'],
         ['点赞', '双击画面（图片帖双击为放大 / 缩小）'],
+        ['图片缩放', '双指捏合连续缩放（移动端）；双击在适配尺寸与原生分辨率间切换；PC 上 Ctrl + 滚轮以光标为锚点缩放'],
         ['打开原帖', '点击左下角标题'],
         ['清屏', '右下角「清屏」按钮：隐藏全部控件只看内容，再点还原'],
         ['从头看 / 回到进度', '左上角计数器右侧的两个小图标：从头看回第 1 页最新并清掉阅读进度，另一个回到上次看到的最靠后位置'],
