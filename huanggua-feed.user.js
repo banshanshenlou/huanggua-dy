@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         黄瓜吧抖音模式
 // @namespace    huanggua-dy
-// @version      1.31.0
+// @version      1.31.1
 // @description  把黄瓜吧列表页改造成抖音式全屏竖向刷屏，可随时切回原模式
 // @updateURL    https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
 // @downloadURL  https://raw.githubusercontent.com/banshanshenlou/huanggua-dy/main/huanggua-feed.user.js
@@ -53,7 +53,7 @@
 
   // ---------------------------------------------------------------- 配置
 
-  const VERSION = '1.31.0';
+  const VERSION = '1.31.1';
 
   const CONFIG = {
     sel: {
@@ -808,6 +808,10 @@
 .dyf-field input[type=text]{width:100%;background:#0e0e10;border:1px solid rgba(255,255,255,.15);
   color:#fff;border-radius:6px;padding:7px 9px;font-size:13px;outline:none;}
 .dyf-field input[type=text]:focus{border-color:#fe2c55}
+/* 传感器自检：直接告诉用户卡在哪一层，免得只能猜权限 */
+.dyf-hint{font-size:11.5px;line-height:1.5;color:rgba(255,255,255,.5);margin:-2px 0 6px;}
+.dyf-hint.is-bad{color:#ff9c9c}
+.dyf-hint.is-ok{color:#8fe3a5}
 .dyf-panel-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
 .dyf-panel-actions button{background:rgba(255,255,255,.1);border:0;color:#fff;
   padding:8px 15px;border-radius:6px;font-size:13px;cursor:pointer;}
@@ -880,6 +884,12 @@
       // 倾斜换边：当前操作栏在哪侧、监听函数、上次判定时间（节流用）
       this.actionSide = 'right';
       this.orientationHandler = null;
+      this.absoluteHandler = null;
+      this.gravitySensor = null;
+      this.sensorState = 'off';
+      this.lastGamma = null;
+      this.sensorHintEl = null;
+      this.sensorWaitTimer = null;
       this.sideCheckAt = 0;
       // 已并行预载过的图片地址：窗口回收只清节点，缓存命中靠它去重
       this.warmedImages = new Set();
@@ -1017,6 +1027,7 @@
       // 倾斜换边：监听必须摘，否则下一个实例会收到两份事件
       this.stopOrientationWatch();
       this.actionSide = 'right';
+      this.sensorHintEl = null;
 
       removeStyle();
       document.documentElement.classList.remove('dyf-locked');
@@ -1742,29 +1753,87 @@
       this.startOrientationWatch();
     }
 
+    /**
+     * 挂传感器监听。
+     * 两条路并行：DeviceOrientationEvent（Android/iOS 通用）与 GravitySensor（Chromium 独有，
+     * 某些设备上方向事件为 null 而重力传感器仍有数据），谁先给数据用谁。
+     * 3 秒内一条数据都没有就进入“无数据”状态，面板上直接告知用户。
+     */
     startOrientationWatch() {
-      if (this.orientationHandler || typeof window.DeviceOrientationEvent !== 'function') return;
-      this.orientationHandler = event => this.handleOrientation(event);
-      window.addEventListener('deviceorientation', this.orientationHandler, true);
+      if (this.orientationHandler || this.gravitySensor) return;
+      this.sensorState = 'waiting';
+      this.lastGamma = null;
+      if (typeof window.DeviceOrientationEvent === 'function') {
+        this.orientationHandler = event => this.handleOrientation(event);
+        window.addEventListener('deviceorientation', this.orientationHandler, true);
+        // 部分 Chromium 只发绝对方向事件
+        this.absoluteHandler = event => this.handleOrientation(event);
+        window.addEventListener('deviceorientationabsolute', this.absoluteHandler, true);
+      }
+      this.startGravitySensor();
+      clearTimeout(this.sensorWaitTimer);
+      this.sensorWaitTimer = setTimeout(() => {
+        this.sensorWaitTimer = null;
+        if (this.sensorState !== 'active') {
+          this.sensorState = 'nodata';
+          this.updateSensorHint();
+        }
+      }, 3000);
+      this.updateSensorHint();
+    }
+
+    /** GravitySensor 兜底：用重力在设备 x 轴的分量换算横滚角 */
+    startGravitySensor() {
+      if (typeof window.GravitySensor !== 'function') return;
+      try {
+        const sensor = new window.GravitySensor({ frequency: 10 });
+        sensor.addEventListener('reading', () => {
+          const z = Math.abs(sensor.z) || 9.8;
+          this.handleTilt(Math.atan2(sensor.x, z) * 180 / Math.PI);
+        });
+        sensor.start();
+        this.gravitySensor = sensor;
+      } catch (e) {
+        this.gravitySensor = null;
+      }
     }
 
     stopOrientationWatch() {
-      if (!this.orientationHandler) return;
-      window.removeEventListener('deviceorientation', this.orientationHandler, true);
-      this.orientationHandler = null;
+      if (this.orientationHandler) {
+        window.removeEventListener('deviceorientation', this.orientationHandler, true);
+        this.orientationHandler = null;
+      }
+      if (this.absoluteHandler) {
+        window.removeEventListener('deviceorientationabsolute', this.absoluteHandler, true);
+        this.absoluteHandler = null;
+      }
+      if (this.gravitySensor) {
+        try { this.gravitySensor.stop(); } catch (e) { /* 忽略 */ }
+        this.gravitySensor = null;
+      }
+      clearTimeout(this.sensorWaitTimer);
+      this.sensorWaitTimer = null;
+      this.sensorState = 'off';
+      this.updateSensorHint();
+    }
+
+    /** 把事件转成倾斜角；无数据的事件（gamma 为 null）不当数据 */
+    handleOrientation(event) {
+      if (typeof event.gamma === 'number' && isFinite(event.gamma)) this.handleTilt(event.gamma);
     }
 
     /**
-     * gamma 是绕屏幕前后轴的横滚角：正值 = 右侧下沉，负值 = 左侧下沉。
-     * 动作：20 Hz 快于需要，做 200ms 节流；接近平放（小于 8°）回退右侧；
-     * 横屏时 gamma 语义随设备旋转变化，直接回退右侧。
+     * gamma（或重力换算的横滚角）为正 = 右侧下沉，为负 = 左侧下沉。
+     * 接近平放（小于 8°）与横屏一律回退右侧。
      */
-    handleOrientation(event) {
+    handleTilt(gamma) {
       if (!settings.gravitySide || !this.opened) return;
-      const gamma = event.gamma;
-      if (typeof gamma !== 'number' || !isFinite(gamma)) {
-        this.applyActionSide('right');
-        return;
+      this.lastGamma = gamma;
+      if (this.sensorState !== 'active') {
+        this.sensorState = 'active';
+        clearTimeout(this.sensorWaitTimer);
+        this.sensorWaitTimer = null;
+        this.updateSensorHint();
       }
       if (window.innerWidth > window.innerHeight) {
         this.applyActionSide('right');
@@ -1775,6 +1844,40 @@
       this.sideCheckAt = now;
       if (Math.abs(gamma) < 8) this.applyActionSide('right');
       else this.applyActionSide(gamma > 0 ? 'right' : 'left');
+      this.updateSensorHint();
+    }
+
+    /** 传感器状态文案：直接把卡在哪一层写出来 */
+    updateSensorHint() {
+      const hint = this.sensorHintEl;
+      if (!hint) return;
+      const hasApi = typeof window.DeviceOrientationEvent === 'function' ||
+        typeof window.GravitySensor === 'function';
+      const needsPermission = typeof window.DeviceOrientationEvent === 'function' &&
+        typeof window.DeviceOrientationEvent.requestPermission === 'function';
+      let text = '';
+      let level = '';
+      if (!settings.gravitySide) {
+        text = hasApi
+          ? '未开启。开启后浏览器会按「本站域名」询问运动传感器权限。'
+          : '此浏览器未提供设备方向接口，开启也用不了。';
+        level = hasApi ? '' : 'is-bad';
+      } else if (this.sensorState === 'active') {
+        const g = Number(this.lastGamma || 0);
+        text = '已收到数据：倾斜 ' + g.toFixed(1) + '°，按钮在' +
+          (this.actionSide === 'left' ? '左' : '右') + '侧。';
+        level = 'is-ok';
+      } else if (this.sensorState === 'nodata') {
+        text = '已开始监听，但 3 秒内没有收到数据。检查浏览器或系统是否禁用了运动传感器。';
+        level = 'is-bad';
+      } else {
+        text = '已开始监听，等待数据…' +
+          (needsPermission ? '（本浏览器需要弹窗授权）' : '（本浏览器不需要弹窗授权）');
+        level = '';
+      }
+      hint.textContent = text;
+      hint.classList.toggle('is-bad', level === 'is-bad');
+      hint.classList.toggle('is-ok', level === 'is-ok');
     }
 
     /** 切换操作栏所在侧；同一侧不重复写 DOM */
@@ -3730,6 +3833,11 @@
         void this.toggleGravitySide(value, gravityRow.__checkbox);
       });
       box.appendChild(gravityRow);
+
+      // 传感器自检：把「浏览器不支持 / 权限被拒 / 已监听但无数据 / 正常」分开说清楚
+      this.sensorHintEl = el('div', 'dyf-hint');
+      box.appendChild(this.sensorHintEl);
+      this.updateSensorHint();
 
       box.appendChild(this.fieldRow('屏蔽标签（逗号分隔，可带 #）', settings.blockTags, value => {
         settings.blockTags = value;
